@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ewo"
+version = "0.1.0"
+description = "Task/project management platform: FastAPI server + CLI + htmx GUI + Discord + MCP"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "respx",
+    "mypy",
+    "ruff",
+]
+
+[project.scripts]
+ewo = "ewo.cli.main:cli"
+
+[tool.setuptools]
+packages = { find = { include = ["ewo*"] } }
+
+[tool.setuptools.package-data]
+ewo = ["server/templates/*.html", "db/alembic/*.mako", "py.typed"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=ewo --cov-report=term-missing --cov-fail-under=95"
+
+[tool.coverage.run]
+omit = [
+    "ewo/db/alembic/*",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["ewo"]
+
+[[tool.mypy.overrides]]
+module = [
+    "apscheduler.*",
+    "discord.*",
+    "google.*",
+    "google_auth_oauthlib.*",
+]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["ewo/db/alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle/pyflakes
+    "I",             # isort
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "SIM",           # simplify
+    "RUF",
+]

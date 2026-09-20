@@ -1,0 +1,17 @@
+# Runtime dependencies. NOTE: uvicorn is deliberately absent — it is installed
+# only in the Docker image (see Dockerfile) or manually in a dev venv.
+fastapi
+pydantic>=2
+sqlalchemy>=2
+alembic
+psycopg[binary]
+click
+httpx
+jinja2
+python-multipart
+apscheduler>=3,<4
+openai
+discord.py
+mcp
+google-auth
+google-auth-oauthlib

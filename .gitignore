@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+ewo.json
+.env

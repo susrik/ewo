@@ -1,0 +1,7 @@
+<ul class="menu">
+  {% for person in people %}
+  <li><span>{{ person.name }}{% if person.email %} <span class="opacity-60">({{ person.email }})</span>{% endif %}</span></li>
+  {% else %}
+  <li><span>No people yet.</span></li>
+  {% endfor %}
+</ul>

@@ -1,0 +1,16 @@
+<div class="grid gap-3">
+  {% for meeting in meetings %}
+  <div class="border rounded p-3">
+    <div class="font-semibold">{{ meeting.person.name }} — {{ meeting.scheduled_for.isoformat() }}</div>
+    <ul class="list-disc list-inside">
+      {% for item in meeting.agenda_items %}
+      <li class="{% if item.status.value != 'open' %}line-through opacity-60{% endif %}">{{ item.topic }}</li>
+      {% else %}
+      <li>(no agenda items)</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% else %}
+  <p>No 1:1 meetings yet.</p>
+  {% endfor %}
+</div>

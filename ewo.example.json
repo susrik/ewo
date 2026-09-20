@@ -1,0 +1,46 @@
+{
+  "server": { "host": "0.0.0.0", "port": 8000 },
+  "storage": { "data_dir": "/data" },
+  "database": { "url": "postgresql+psycopg://ewo:ewo@db:5432/ewo" },
+  "api_base_url": "http://localhost:8000",
+  "llm": {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "model": "gpt-4o-mini",
+    "smart_model": "gpt-4o"
+  },
+  "jira": {
+    "enabled": false,
+    "base_url": "https://yourcompany.atlassian.net",
+    "email": "you@example.com",
+    "api_token": "...",
+    "jql": "assignee = currentUser() AND resolution = Unresolved"
+  },
+  "google": {
+    "enabled": false,
+    "client_id": "....apps.googleusercontent.com",
+    "client_secret": "...",
+    "calendar_id": "primary",
+    "email_from": "ewo@example.com",
+    "email_to": "you@example.com"
+  },
+  "discord": {
+    "enabled": false,
+    "token": "...",
+    "channel_id": 0
+  },
+  "reports_repo": {
+    "enabled": false,
+    "repo_url": "https://github.com/you/ewo-reports.git",
+    "token": "ghp_...",
+    "branch": "main",
+    "folder": "ewo"
+  },
+  "jobs": {
+    "schedules": {
+      "jira_sync": "*/30 * * * *",
+      "daily_report": "0 7 * * 1-5"
+    }
+  },
+  "mcp": { "http_enabled": false, "http_port": 8765 }
+}

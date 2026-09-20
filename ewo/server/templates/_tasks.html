@@ -1,0 +1,33 @@
+<table class="table">
+  <thead>
+    <tr><th>Task</th><th>Assignee</th><th>Priority</th><th>Due</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    {% for task in tasks %}
+    <tr>
+      <td>
+        {{ task.title }}
+        {% for tag in task.tags %}<span class="badge badge-ghost">{{ tag.name }}</span>{% endfor %}
+        {% for link in task.external_links %}
+          {% if link.url %}<a class="link link-primary text-sm" href="{{ link.url }}">{{ link.external_key }}</a>{% endif %}
+        {% endfor %}
+      </td>
+      <td>{{ task.assignee.name if task.assignee else "—" }}</td>
+      <td><span class="badge badge-outline">{{ task.priority.value }}</span></td>
+      <td>{{ task.due_date.isoformat() if task.due_date else "—" }}</td>
+      <td>
+        <form hx-post="/gui/tasks/{{ task.id }}/status" hx-target="#task-list">
+          <select class="select select-bordered select-sm" name="status"
+                  hx-post="/gui/tasks/{{ task.id }}/status" hx-target="#task-list">
+            {% for s in statuses %}
+            <option value="{{ s.value }}" {% if s == task.status %}selected{% endif %}>{{ s.value }}</option>
+            {% endfor %}
+          </select>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No open tasks.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
