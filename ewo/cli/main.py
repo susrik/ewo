@@ -105,26 +105,32 @@ def person() -> None:
 
 @person.command("add")
 @click.argument("name")
-@click.option("--email", default=None)
 @click.option("--jira-account-id", default=None)
 @click.option("--discord-user-id", default=None)
+@click.option("--notes-dir", default=None, help="Folder in the notes tree, e.g. swd/people/sam")
+@click.option("--alias", "aliases", multiple=True, help="Other names used in notes.")
+@click.option("--self", "is_self", is_flag=True, default=False, help="This person is me.")
 @config_option
 def person_add(
     name: str,
-    email: str | None,
     jira_account_id: str | None,
     discord_user_id: str | None,
+    notes_dir: str | None,
+    aliases: tuple[str, ...],
+    is_self: bool,
     config: Config,
 ) -> None:
-    """Add a person."""
+    """Add a team member."""
     with _client(config) as client:
         response = client.post(
             "/api/people",
             json={
                 "name": name,
-                "email": email,
                 "jira_account_id": jira_account_id,
                 "discord_user_id": discord_user_id,
+                "notes_dir": notes_dir,
+                "aliases": list(aliases),
+                "is_self": is_self,
             },
         )
         response.raise_for_status()
@@ -139,7 +145,91 @@ def person_list(config: Config) -> None:
         response = client.get("/api/people")
         response.raise_for_status()
         for p in response.json():
-            click.echo(f"#{p['id']} {p['name']} {p['email'] or ''}")
+            marker = " (me)" if p["is_self"] else ""
+            notes_dir = f" [{p['notes_dir']}]" if p.get("notes_dir") else ""
+            click.echo(f"#{p['id']} {p['name']}{marker}{notes_dir}")
+
+
+@person.command("seed")
+@config_option
+def person_seed(config: Config) -> None:
+    """Create people from the team folders in the notes tree."""
+    with _client(config) as client:
+        response = client.post("/api/people/seed-from-notes")
+        response.raise_for_status()
+        created = response.json()["created"]
+        for p in created:
+            click.echo(f"created #{p['id']} {p['name']} [{p['notes_dir']}]")
+        if not created:
+            click.echo("nothing to add")
+
+
+# --- inbox ---
+
+
+@cli.group()
+def inbox() -> None:
+    """Items discovered in notes, awaiting review."""
+
+
+@inbox.command("list")
+@click.option("--status", default="new", help="new|accepted|dismissed|already_done|all")
+@config_option
+def inbox_list(status: str, config: Config) -> None:
+    """List inbox items."""
+    params = {} if status == "all" else {"status": status}
+    with _client(config) as client:
+        response = client.get("/api/note-items", params=params)
+        response.raise_for_status()
+        for item in response.json():
+            owner = item["owner"]["name"] if item.get("owner") else (item.get("owner_name") or "-")
+            due = f" due {item['due_date']}" if item.get("due_date") else ""
+            click.echo(
+                f"#{item['id']} [{item['kind']}] {item['summary']} @{owner}{due}"
+                f"  ({item['path']}:{item['line']})"
+            )
+
+
+@inbox.command("accept")
+@click.argument("item_id", type=int)
+@click.option("--priority", default="normal")
+@click.option("--assignee-id", type=int, default=None)
+@click.option("--due", default=None, help="Due date YYYY-MM-DD")
+@config_option
+def inbox_accept(
+    item_id: int, priority: str, assignee_id: int | None, due: str | None, config: Config
+) -> None:
+    """Turn an inbox item into a task."""
+    with _client(config) as client:
+        response = client.post(
+            f"/api/note-items/{item_id}/accept",
+            json={"priority": priority, "assignee_id": assignee_id, "due_date": due},
+        )
+        response.raise_for_status()
+        task = response.json()
+        click.echo(f"task #{task['id']} created: {task['title']}")
+
+
+@inbox.command("dismiss")
+@click.argument("item_id", type=int)
+@config_option
+def inbox_dismiss(item_id: int, config: Config) -> None:
+    """Dismiss an inbox item (not actionable)."""
+    with _client(config) as client:
+        response = client.post(f"/api/note-items/{item_id}/dismiss")
+        response.raise_for_status()
+        click.echo(f"item #{item_id} dismissed")
+
+
+@inbox.command("done")
+@click.argument("item_id", type=int)
+@config_option
+def inbox_done(item_id: int, config: Config) -> None:
+    """Mark an inbox item as already finished (the note is left untouched)."""
+    with _client(config) as client:
+        response = client.post(f"/api/note-items/{item_id}/done")
+        response.raise_for_status()
+        click.echo(f"item #{item_id} marked already done")
 
 
 # --- one-on-ones ---
@@ -220,11 +310,12 @@ def jobs_list(config: Config) -> None:
 
 @jobs.command("run")
 @click.argument("name")
+@click.option("--full", is_flag=True, default=False, help="notes_scan: rescan the whole window.")
 @config_option
-def jobs_run(name: str, config: Config) -> None:
+def jobs_run(name: str, full: bool, config: Config) -> None:
     """Run a job on demand."""
     with _client(config) as client:
-        response = client.post(f"/api/jobs/{name}/run")
+        response = client.post(f"/api/jobs/{name}/run", params={"full": str(full).lower()})
         response.raise_for_status()
         _echo_json(response.json())
 
@@ -237,9 +328,10 @@ def jobs_runs(config: Config) -> None:
         response = client.get("/api/jobs/runs")
         response.raise_for_status()
         for run in response.json():
+            result = f" {run['result']}" if run.get("result") else ""
             click.echo(
                 f"#{run['id']} {run['job_name']} {run['status']} "
-                f"started={run['started_at']} tokens={run['tokens_used']}"
+                f"started={run['started_at']} tokens={run['tokens_used']}{result}"
             )
 
 

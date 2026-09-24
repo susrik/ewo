@@ -27,6 +27,15 @@ def test_defaults() -> None:
     assert config.server.host == "0.0.0.0"
     assert config.server.port == 8000
     assert config.reports_repo.folder == "ewo"
+    assert config.notes.enabled is False
+    assert config.notes.people_dir == "swd/people"
+    assert config.notes.window_days == 60
+
+
+def test_notes_root_expands_user() -> None:
+    config = Config.model_validate({"notes": {"root": "~/notes/work", "exclude": ["x"]}})
+    assert config.notes_root.is_absolute() and "~" not in str(config.notes_root)
+    assert config.notes.exclude == ["x"]
 
 
 def test_load_config_from_explicit_path(tmp_path: Path) -> None:

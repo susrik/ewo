@@ -1,7 +1,25 @@
-<ul class="menu">
-  {% for person in people %}
-  <li><span>{{ person.name }}{% if person.email %} <span class="opacity-60">({{ person.email }})</span>{% endif %}</span></li>
-  {% else %}
-  <li><span>No people yet.</span></li>
-  {% endfor %}
-</ul>
+<table class="table mt-2">
+  <thead><tr><th>Name</th><th>Notes folder</th><th>Aliases</th><th>Open tasks</th><th>Inbox</th><th>Last 1:1</th><th></th></tr></thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td>
+        <a class="link link-hover font-medium" href="/tasks?assignee={{ row.person.id }}">{{ row.person.name }}</a>
+        {% if row.person.is_self %}<span class="badge badge-primary badge-sm">me</span>{% endif %}
+      </td>
+      <td class="font-mono text-xs">{{ row.person.notes_dir or "—" }}</td>
+      <td class="text-sm">{{ row.person.aliases | join(', ') or "—" }}</td>
+      <td>{{ row.open_tasks | length }}</td>
+      <td>{% if row.inbox_new %}<a class="link" href="/inbox?owner={{ row.person.id }}">{{ row.inbox_new }}</a>{% else %}0{% endif %}</td>
+      <td class="text-sm">{{ row.last_meeting.scheduled_for.isoformat() if row.last_meeting else "—" }}</td>
+      <td>
+        {% if not row.person.is_self %}
+        <button class="btn btn-xs btn-ghost" hx-post="/gui/people/{{ row.person.id }}/self" hx-target="#people-list">this is me</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="opacity-60">No people yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>

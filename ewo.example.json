@@ -39,8 +39,17 @@
   "jobs": {
     "schedules": {
       "jira_sync": "*/30 * * * *",
-      "daily_report": "0 7 * * 1-5"
+      "daily_report": "0 7 * * 1-5",
+      "notes_scan": "0 6 * * 1-5"
     }
   },
-  "mcp": { "http_enabled": false, "http_port": 8765 }
+  "mcp": { "http_enabled": false, "http_port": 8765 },
+  "notes": {
+    "enabled": false,
+    "root": "~/notes/work",
+    "people_dir": "swd/people",
+    "exclude": ["swd/people/former", "overviews"],
+    "window_days": 60,
+    "max_file_chars": 40000
+  }
 }

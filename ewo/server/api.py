@@ -9,10 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
-from ewo.core import one_on_ones, people, reports, tasks, whatnext
+from ewo.core import note_items, one_on_ones, people, reports, tasks, whatnext
 from ewo.core.llm import LLMClient
+from ewo.core.notes import NotesReader
 from ewo.core.people import NotFoundError
-from ewo.db.models import JobRun, Report
+from ewo.db.models import JobRun, NoteItemStatus, Report, TaskStatus
 from ewo.jobs.registry import JobRegistry, UnknownJobError
 from ewo.server import schemas
 from ewo.server.deps import get_config, get_llm, get_registry, get_session, get_session_factory
@@ -61,6 +62,16 @@ def delete_person(person_id: int, session: SessionDep) -> object:
     return schemas.MessageOut(detail="deleted")
 
 
+@router.post("/people/seed-from-notes", response_model=schemas.SeedResultOut)
+def seed_people(session: SessionDep, config: Annotated[Config, Depends(get_config)]) -> object:
+    """Create a person per team-member folder in the notes tree."""
+    if not config.notes.enabled:
+        raise HTTPException(status_code=400, detail="notes are not enabled in config")
+    reader = NotesReader(config.notes_root)
+    created = people.seed_from_notes(session, reader.people_dirs(config.notes.people_dir))
+    return schemas.SeedResultOut(created=[schemas.PersonOut.model_validate(p) for p in created])
+
+
 # --- tasks ---
 
 
@@ -77,8 +88,6 @@ def list_tasks(
     tag: str | None = None,
     include_closed: bool = False,
 ) -> object:
-    from ewo.db.models import TaskStatus
-
     parsed_status = TaskStatus(status) if status else None
     return tasks.list_tasks(
         session,
@@ -119,6 +128,53 @@ def delete_task(task_id: int, session: SessionDep) -> object:
 @router.post("/notes", response_model=schemas.NoteOut, status_code=201)
 def add_note(body: schemas.NoteCreate, session: SessionDep) -> object:
     return tasks.add_note(session, **body.model_dump())
+
+
+# --- inbox: items discovered in notes ---
+
+
+@router.get("/note-items", response_model=list[schemas.NoteItemOut])
+def list_note_items(
+    session: SessionDep,
+    status: str | None = "new",
+    owner_id: int | None = None,
+    path_prefix: str | None = None,
+) -> object:
+    parsed = NoteItemStatus(status) if status else None
+    return note_items.list_items(session, status=parsed, owner_id=owner_id, path_prefix=path_prefix)
+
+
+@router.patch("/note-items/{item_id}", response_model=schemas.NoteItemOut)
+def update_note_item(item_id: int, body: schemas.NoteItemUpdate, session: SessionDep) -> object:
+    try:
+        return note_items.update_item(session, item_id, **body.model_dump(exclude_unset=True))
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/note-items/{item_id}/accept", response_model=schemas.TaskOut, status_code=201)
+def accept_note_item(item_id: int, body: schemas.NoteItemAccept, session: SessionDep) -> object:
+    try:
+        return note_items.accept_item(session, item_id, **body.model_dump())
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/note-items/{item_id}/dismiss", response_model=schemas.NoteItemOut)
+def dismiss_note_item(item_id: int, session: SessionDep) -> object:
+    try:
+        return note_items.set_item_status(session, item_id, NoteItemStatus.DISMISSED)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/note-items/{item_id}/done", response_model=schemas.NoteItemOut)
+def note_item_already_done(item_id: int, session: SessionDep) -> object:
+    """The note still lists it, but it is finished — record that without editing the note."""
+    try:
+        return note_items.set_item_status(session, item_id, NoteItemStatus.ALREADY_DONE)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # --- one-on-ones ---
@@ -209,9 +265,10 @@ def run_job(
     session_factory: Annotated[sessionmaker[Session], Depends(get_session_factory)],
     config: Annotated[Config, Depends(get_config)],
     llm: Annotated[LLMClient, Depends(get_llm)],
+    full: bool = False,
 ) -> object:
     try:
-        return registry.run(name, session_factory, config, llm)
+        return registry.run(name, session_factory, config, llm, params={"full": str(full)})
     except UnknownJobError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

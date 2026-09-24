@@ -9,3 +9,5 @@ build/
 dist/
 ewo.json
 .env
+secrets.txt
+*.swp

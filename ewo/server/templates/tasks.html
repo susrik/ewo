@@ -1,0 +1,54 @@
+{% extends "_layout.html" %}
+{% block content %}
+<div class="grid gap-6">
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Add task</h2>
+      <form hx-post="/gui/tasks" hx-target="#task-list" hx-on::after-request="this.reset()" class="flex flex-wrap gap-2">
+        <input class="input input-bordered flex-1 min-w-64" name="title" placeholder="Task title" required>
+        <select class="select select-bordered" name="priority">
+          {% for p in priorities %}<option value="{{ p.value }}" {% if p.value == 'normal' %}selected{% endif %}>{{ p.value }}</option>{% endfor %}
+        </select>
+        <select class="select select-bordered" name="assignee_id">
+          <option value="">(unassigned)</option>
+          {% for person in people %}<option value="{{ person.id }}">{{ person.name }}{% if person.is_self %} (me){% endif %}</option>{% endfor %}
+        </select>
+        <input class="input input-bordered" type="date" name="due_date">
+        <input class="input input-bordered" name="tags" placeholder="tags, comma separated">
+        <button class="btn btn-primary" type="submit">Add</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="card-title flex-1">Tasks</h2>
+        <form hx-get="/gui/tasks" hx-target="#task-list" hx-trigger="change" class="flex flex-wrap gap-2">
+          <select class="select select-bordered select-sm" name="status">
+            <option value="">any open status</option>
+            {% for s in statuses %}<option value="{{ s.value }}" {% if filters.status == s.value %}selected{% endif %}>{{ s.value }}</option>{% endfor %}
+          </select>
+          <select class="select select-bordered select-sm" name="assignee">
+            <option value="">anyone</option>
+            {% for person in people %}<option value="{{ person.id }}" {% if filters.assignee == person.id|string %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
+          </select>
+          <select class="select select-bordered select-sm" name="source">
+            <option value="">any source</option>
+            {% for s in sources %}<option value="{{ s.value }}" {% if filters.source == s.value %}selected{% endif %}>{{ s.value }}</option>{% endfor %}
+          </select>
+          <input class="input input-bordered input-sm w-32" name="tag" placeholder="tag" value="{{ filters.tag }}">
+          <label class="label cursor-pointer gap-1 text-sm">
+            <input type="checkbox" class="checkbox checkbox-sm" name="include_closed" value="true" {% if filters.include_closed %}checked{% endif %}> closed too
+          </label>
+        </form>
+      </div>
+      <div id="task-list">
+        {% include "_tasks.html" %}
+      </div>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

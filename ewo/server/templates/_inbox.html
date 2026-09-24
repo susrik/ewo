@@ -1,0 +1,12 @@
+{% for path, items in groups.items() %}
+<div class="mt-4">
+  <h3 class="font-mono text-sm opacity-70">{{ path }}</h3>
+  <div class="grid gap-2 mt-1">
+    {% for item in items %}
+    {% include "_inbox_item.html" %}
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<p class="opacity-60 mt-2">Nothing to review.</p>
+{% endfor %}

@@ -1,0 +1,31 @@
+<div id="item-{{ item.id }}" class="border rounded p-3 {% if item.status.value != 'new' %}opacity-60{% endif %}">
+  <div class="flex flex-wrap items-baseline gap-2">
+    <span class="badge badge-sm {% if item.kind.value == 'deadline' %}badge-error{% elif item.kind.value == 'question' %}badge-info{% elif item.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ item.kind.value }}</span>
+    <span class="font-medium flex-1">{{ item.summary }}</span>
+    <span class="text-xs opacity-60 font-mono">line {{ item.line }}</span>
+    {% if item.owner %}<span class="badge badge-outline badge-sm">{{ item.owner.name }}</span>
+    {% elif item.owner_name %}<span class="badge badge-outline badge-sm badge-warning" title="not matched to a person">{{ item.owner_name }}?</span>{% endif %}
+    {% if item.due_date %}<span class="badge badge-sm badge-error badge-outline">due {{ item.due_date.isoformat() }}</span>{% endif %}
+  </div>
+  {% if item.excerpt %}<blockquote class="text-sm opacity-70 mt-1 border-l-2 pl-2">{{ item.excerpt }}</blockquote>{% endif %}
+
+  {% if item.status.value == 'new' %}
+  <form hx-post="/gui/inbox/{{ item.id }}/accept" hx-target="#item-{{ item.id }}" hx-swap="outerHTML" class="flex flex-wrap gap-2 mt-2 items-center">
+    <select class="select select-bordered select-xs" name="priority">
+      {% for p in priorities %}<option value="{{ p.value }}" {% if (p.value == 'high' and item.kind.value == 'deadline') or (p.value == 'normal' and item.kind.value != 'deadline') %}selected{% endif %}>{{ p.value }}</option>{% endfor %}
+    </select>
+    <select class="select select-bordered select-xs" name="assignee_id">
+      <option value="">{% if item.owner %}{{ item.owner.name }}{% else %}(unassigned){% endif %}</option>
+      {% for person in people %}<option value="{{ person.id }}">{{ person.name }}{% if person.is_self %} (me){% endif %}</option>{% endfor %}
+    </select>
+    <input class="input input-bordered input-xs" type="date" name="due_date" value="{{ item.due_date.isoformat() if item.due_date else '' }}">
+    <button class="btn btn-xs btn-primary" type="submit">Accept → task</button>
+    <button class="btn btn-xs" type="button" hx-post="/gui/inbox/{{ item.id }}/done" hx-target="#item-{{ item.id }}" hx-swap="outerHTML">Already done</button>
+    <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/{{ item.id }}/dismiss" hx-target="#item-{{ item.id }}" hx-swap="outerHTML">Dismiss</button>
+  </form>
+  {% else %}
+  <div class="text-xs mt-2 opacity-80">
+    {{ item.status.value.replace('_', ' ') }}{% if item.task_id %} — <a class="link" href="/tasks?include_closed=true">task #{{ item.task_id }}</a>{% endif %}
+  </div>
+  {% endif %}
+</div>

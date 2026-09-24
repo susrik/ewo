@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict
 from ewo.db.models import (
     AgendaItemStatus,
     JobRunStatus,
+    NoteItemKind,
+    NoteItemStatus,
     TaskPriority,
     TaskSource,
     TaskStatus,
@@ -24,27 +26,34 @@ class ORMModel(BaseModel):
 
 class PersonCreate(BaseModel):
     name: str
-    email: str | None = None
     jira_account_id: str | None = None
     discord_user_id: str | None = None
     is_self: bool = False
+    notes_dir: str | None = None
+    aliases: list[str] = []
 
 
 class PersonUpdate(BaseModel):
     name: str | None = None
-    email: str | None = None
     jira_account_id: str | None = None
     discord_user_id: str | None = None
     is_self: bool | None = None
+    notes_dir: str | None = None
+    aliases: list[str] | None = None
 
 
 class PersonOut(ORMModel):
     id: int
     name: str
-    email: str | None
     jira_account_id: str | None
     discord_user_id: str | None
     is_self: bool
+    notes_dir: str | None
+    aliases: list[str]
+
+
+class SeedResultOut(BaseModel):
+    created: list[PersonOut]
 
 
 # --- tasks ---
@@ -114,6 +123,41 @@ class NoteOut(ORMModel):
     created_at: datetime
 
 
+# --- note items (inbox) ---
+
+
+class NoteItemOut(ORMModel):
+    id: int
+    path: str
+    line: int
+    summary: str
+    excerpt: str | None
+    kind: NoteItemKind
+    status: NoteItemStatus
+    owner_id: int | None
+    owner: PersonOut | None
+    owner_name: str | None
+    due_date: date | None
+    task_id: int | None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    reviewed_at: datetime | None
+
+
+class NoteItemUpdate(BaseModel):
+    summary: str | None = None
+    owner_id: int | None = None
+    due_date: date | None = None
+    kind: NoteItemKind | None = None
+
+
+class NoteItemAccept(BaseModel):
+    title: str | None = None
+    priority: TaskPriority = TaskPriority.NORMAL
+    assignee_id: int | None = None
+    due_date: date | None = None
+
+
 # --- one-on-ones ---
 
 
@@ -157,6 +201,7 @@ class JobRunOut(ORMModel):
     status: JobRunStatus
     started_at: datetime
     finished_at: datetime | None
+    result: str | None
     error: str | None
     tokens_used: int
 

@@ -1,89 +1,101 @@
-<!doctype html>
-<html lang="en" data-theme="light">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ewo</title>
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <link href="https://cdn.jsdelivr.net/npm/daisyui@4/dist/full.min.css" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-base-200 min-h-screen">
-  <div class="navbar bg-base-100 shadow">
-    <span class="text-xl font-bold px-4">ewo</span>
-  </div>
+{% extends "_layout.html" %}
+{% block title %}today{% endblock %}
+{% block content %}
 
-  <main class="container mx-auto p-4 grid gap-6 lg:grid-cols-2">
+{% if board.warnings %}
+<div class="mb-4 grid gap-2">
+  {% for warning in board.warnings %}
+  <div class="alert alert-warning py-2 text-sm"><span>{{ warning }}</span></div>
+  {% endfor %}
+</div>
+{% endif %}
 
-    <section class="card bg-base-100 shadow">
-      <div class="card-body">
-        <h2 class="card-title">What next</h2>
-        <ol class="list-decimal list-inside">
-          {% for entry in ranked %}
-          <li>
-            <span class="font-semibold">{{ entry.task.title }}</span>
-            <span class="badge badge-outline">{{ entry.task.priority.value }}</span>
-            <span class="text-sm opacity-70">{{ entry.reasons | join(', ') }}</span>
-          </li>
-          {% else %}
-          <li>Nothing tracked — all clear.</li>
-          {% endfor %}
-        </ol>
-      </div>
-    </section>
+<div class="stats stats-vertical sm:stats-horizontal shadow bg-base-100 w-full mb-6">
+  <a class="stat" href="/tasks">
+    <div class="stat-title">Open tasks</div>
+    <div class="stat-value">{{ board.open_tasks }}</div>
+    <div class="stat-desc">{{ board.blocked }} blocked</div>
+  </a>
+  <a class="stat" href="/tasks?status=open">
+    <div class="stat-title">Critical</div>
+    <div class="stat-value {% if board.critical %}text-error{% endif %}">{{ board.critical }}</div>
+    <div class="stat-desc">{{ board.overdue }} overdue, {{ board.due_soon }} due this week</div>
+  </a>
+  <a class="stat" href="/inbox">
+    <div class="stat-title">Inbox</div>
+    <div class="stat-value {% if board.inbox_new %}text-primary{% endif %}">{{ board.inbox_new }}</div>
+    <div class="stat-desc">
+      {% if board.last_scan %}scanned {{ board.last_scan.started_at.strftime('%Y-%m-%d %H:%M') }}{% else %}never scanned{% endif %}
+    </div>
+  </a>
+  <a class="stat" href="/jobs">
+    <div class="stat-title">Failed jobs (24h)</div>
+    <div class="stat-value {% if board.failed_jobs_24h %}text-error{% endif %}">{{ board.failed_jobs_24h }}</div>
+  </a>
+</div>
 
-    <section class="card bg-base-100 shadow">
-      <div class="card-body">
-        <h2 class="card-title">Add task</h2>
-        <form hx-post="/gui/tasks" hx-target="#task-list" class="flex flex-wrap gap-2">
-          <input class="input input-bordered flex-1" name="title" placeholder="Task title" required>
-          <select class="select select-bordered" name="priority">
-            {% for p in priorities %}<option value="{{ p.value }}">{{ p.value }}</option>{% endfor %}
+<div class="grid gap-6 lg:grid-cols-2">
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Focus now</h2>
+      <ol class="list-decimal list-inside space-y-1">
+        {% for entry in next.focus %}
+        <li>
+          <span class="font-semibold">{{ entry.task.title }}</span>
+          {% if entry.task.assignee %}<span class="badge badge-ghost badge-sm">{{ entry.task.assignee.name }}</span>{% endif %}
+          <span class="badge badge-outline badge-sm">{{ entry.task.priority.value }}</span>
+          <div class="text-xs opacity-70">{{ entry.reasons | join(', ') }}</div>
+        </li>
+        {% else %}
+        <li>Nothing tracked — all clear.</li>
+        {% endfor %}
+      </ol>
+      {% if next.candidates %}
+      <h3 class="font-semibold mt-4 text-sm opacity-70">If not those, then one of these</h3>
+      <ul class="text-sm space-y-1">
+        {% for entry in next.candidates %}
+        <li>{{ entry.task.title }} <span class="text-xs opacity-60">({{ entry.reasons | join(', ') }})</span></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Quick add</h2>
+      <form hx-post="/gui/tasks" hx-target="#quick-add-result" hx-on::after-request="this.reset()" class="grid gap-2">
+        <input type="hidden" name="compact" value="1">
+        <input class="input input-bordered" name="title" placeholder="What needs doing?" required autofocus>
+        <div class="flex flex-wrap gap-2">
+          <select class="select select-bordered select-sm" name="priority">
+            {% for p in priorities %}<option value="{{ p.value }}" {% if p.value == 'normal' %}selected{% endif %}>{{ p.value }}</option>{% endfor %}
           </select>
-          <select class="select select-bordered" name="assignee_id">
+          <select class="select select-bordered select-sm" name="assignee_id">
             <option value="">(unassigned)</option>
-            {% for person in people %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}
+            {% for person in people %}<option value="{{ person.id }}">{{ person.name }}{% if person.is_self %} (me){% endif %}</option>{% endfor %}
           </select>
-          <button class="btn btn-primary" type="submit">Add</button>
-        </form>
-      </div>
-    </section>
-
-    <section class="card bg-base-100 shadow lg:col-span-2">
-      <div class="card-body">
-        <h2 class="card-title">Open tasks</h2>
-        <div id="task-list" hx-get="/gui/tasks" hx-trigger="load">
-          {% include "_tasks.html" %}
+          <input class="input input-bordered input-sm" type="date" name="due_date">
+          <input class="input input-bordered input-sm" name="tags" placeholder="tags, comma separated">
+          <button class="btn btn-primary btn-sm" type="submit">Add</button>
         </div>
-      </div>
-    </section>
+      </form>
+      <div id="quick-add-result" class="text-sm opacity-70"></div>
 
-    <section class="card bg-base-100 shadow">
-      <div class="card-body">
-        <h2 class="card-title">People</h2>
-        <form hx-post="/gui/people" hx-target="#people-list" class="flex gap-2">
-          <input class="input input-bordered flex-1" name="name" placeholder="Name" required>
-          <input class="input input-bordered flex-1" name="email" placeholder="Email">
-          <button class="btn" type="submit">Add</button>
-        </form>
-        <div id="people-list" hx-get="/gui/people" hx-trigger="load"></div>
-      </div>
-    </section>
+      <h2 class="card-title mt-4">Deadlines (next 14 days)</h2>
+      <ul class="text-sm space-y-1">
+        {% for task in deadlines %}
+        <li>
+          <span class="{% if task.due_date < today %}text-error font-semibold{% endif %}">{{ task.due_date.isoformat() }}</span>
+          {{ task.title }}{% if task.assignee %} <span class="opacity-60">— {{ task.assignee.name }}</span>{% endif %}
+        </li>
+        {% else %}
+        <li class="opacity-60">No deadlines coming up.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
 
-    <section class="card bg-base-100 shadow">
-      <div class="card-body">
-        <h2 class="card-title">Recent job runs</h2>
-        <div id="job-runs" hx-get="/gui/job-runs" hx-trigger="load, every 30s"></div>
-      </div>
-    </section>
-
-    <section class="card bg-base-100 shadow lg:col-span-2">
-      <div class="card-body">
-        <h2 class="card-title">1:1 meetings</h2>
-        <div id="one-on-ones" hx-get="/gui/one-on-ones" hx-trigger="load"></div>
-      </div>
-    </section>
-
-  </main>
-</body>
-</html>
+</div>
+{% endblock %}
