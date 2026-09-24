@@ -1,19 +1,23 @@
 <table class="table table-sm">
-  <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Tokens</th></tr></thead>
+  <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Result</th><th>Tokens</th></tr></thead>
   <tbody>
     {% for run in runs %}
     <tr>
-      <td>{{ run.job_name }}</td>
+      <td class="font-mono">{{ run.job_name }}</td>
       <td>
         <span class="badge {% if run.status.value == 'success' %}badge-success{% elif run.status.value == 'failed' %}badge-error{% else %}badge-info{% endif %}">
           {{ run.status.value }}
         </span>
       </td>
       <td>{{ run.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="text-sm">
+        {% if run.result %}<span class="font-mono">{{ run.result }}</span>{% endif %}
+        {% if run.error %}<details><summary class="cursor-pointer text-error">error</summary><pre class="text-xs whitespace-pre-wrap">{{ run.error[-1500:] }}</pre></details>{% endif %}
+      </td>
       <td>{{ run.tokens_used }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="4">No job runs yet.</td></tr>
+    <tr><td colspan="5">No job runs yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>

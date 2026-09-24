@@ -1,0 +1,5 @@
+<span class="badge {% if run.status.value == 'success' %}badge-success{% elif run.status.value == 'failed' %}badge-error{% else %}badge-info{% endif %}">{{ run.status.value }}</span>
+<span class="opacity-70">{{ run.started_at.strftime('%Y-%m-%d %H:%M') }}</span>
+{% if run.result %}<span class="font-mono">{{ run.result }}</span>{% endif %}
+{% if run.error %}<pre class="text-xs text-error whitespace-pre-wrap mt-1">{{ run.error[-800:] }}</pre>{% endif %}
+{% if run.status.value == 'success' %}<a class="link text-xs ml-2" href="/inbox">refresh inbox</a>{% endif %}

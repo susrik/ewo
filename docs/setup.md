@@ -49,7 +49,40 @@ Loaded from `ewo.json` or `$EWO_CONFIG_FILENAME`; every CLI command accepts
 | `reports_repo` | dedicated GitHub repo for markdown reports |
 | `jobs.schedules` | job name → 5-field cron expression ("" disables) |
 | `mcp` | HTTP transport toggle + port |
+| `notes` | read-only markdown notes tree: `root`, `people_dir`, `exclude`, `window_days`, `max_file_chars` |
 | `api_base_url` | where CLI/listeners/MCP find the server |
+
+## Notes → inbox → tasks
+
+ewo can read a tree of markdown notes (never writes to it) and pull the
+outstanding work out of it. Set `notes.enabled: true` and `notes.root`, and
+make sure `llm.api_key` is set (extraction uses the `smart_model`).
+
+1. **People.** Each team member has a folder `<people_dir>/<name>/` in the
+   notes (the `AGENTS.md` inside describes them). `ewo person seed` (or the
+   *Seed from notes* button on the People page) creates a person per folder
+   with `notes_dir` set. Mark yourself with `ewo person add "Erik" --self`;
+   items written in the first person are attributed to you. Add `--alias` for
+   other spellings used in notes. A bare first name is resolved by the folder
+   the note lives in first, then by unique name/alias — an ambiguous alias
+   (two people both called "James") resolves to nobody rather than guessing.
+2. **Scan.** `notes_scan` reads every note changed since the last successful
+   scan (or, with `--full` / `?full=true`, everything dated or modified within
+   `window_days`), passing the folder's `AGENTS.md` chain, the roster and
+   today's date to the LLM, and asks for open actions, questions, deadlines
+   and risks with a line citation each. Rolling `old.md` files contribute only
+   their in-window `## YYYY-MM-DD` sections. Run it with `ewo jobs run
+   notes_scan [--full]`, the *Scan notes* buttons on the Inbox page, or on a
+   schedule via `jobs.schedules.notes_scan`.
+3. **Review.** Items land in the Inbox (`/inbox`, `ewo inbox list`,
+   `GET /api/note-items`). For each: **accept** creates a task
+   (`source=notes`, linked as `notes:<path>:<line>`), **dismiss** drops it, or
+   **already done** records that the note is stale. Reviewed items are never
+   re-surfaced by later scans; re-seen open items only bump `last_seen_at`
+   (which nudges the linked task up in *what next*).
+
+A full rescan of a two-month window over ~90 notes is on the order of 300k
+input tokens; incremental scans are usually a handful of files.
 
 ## Google (one-time)
 
@@ -88,4 +121,5 @@ optionally `discord.channel_id`, and set `discord.enabled: true`. Commands:
   `python -m ewo.mcp.server` as a service.
 
 Tools: `ewo_list_tasks`, `ewo_create_task`, `ewo_set_task_status`,
-`ewo_what_next`, `ewo_run_job`.
+`ewo_what_next`, `ewo_run_job`, `ewo_inbox_list`, `ewo_inbox_accept`,
+`ewo_inbox_resolve`.

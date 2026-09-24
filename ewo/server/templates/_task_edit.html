@@ -1,0 +1,24 @@
+<tr id="task-{{ task.id }}" class="bg-base-200">
+  <td colspan="6">
+    <form hx-post="/gui/tasks/{{ task.id }}" hx-target="#task-{{ task.id }}" hx-swap="outerHTML" class="grid gap-2">
+      <input class="input input-bordered input-sm" name="title" value="{{ task.title }}" required>
+      <textarea class="textarea textarea-bordered textarea-sm" name="description" rows="2" placeholder="Description">{{ task.description or "" }}</textarea>
+      <div class="flex flex-wrap gap-2">
+        <select class="select select-bordered select-sm" name="priority">
+          {% for p in priorities %}<option value="{{ p.value }}" {% if p == task.priority %}selected{% endif %}>{{ p.value }}</option>{% endfor %}
+        </select>
+        <select class="select select-bordered select-sm" name="status">
+          {% for s in statuses %}<option value="{{ s.value }}" {% if s == task.status %}selected{% endif %}>{{ s.value }}</option>{% endfor %}
+        </select>
+        <select class="select select-bordered select-sm" name="assignee_id">
+          <option value="">(unassigned)</option>
+          {% for person in people %}<option value="{{ person.id }}" {% if task.assignee_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
+        </select>
+        <input class="input input-bordered input-sm" type="date" name="due_date" value="{{ task.due_date.isoformat() if task.due_date else '' }}">
+        <input class="input input-bordered input-sm" name="tags" placeholder="tags" value="{{ task.tags | map(attribute='name') | join(', ') }}">
+        <button class="btn btn-primary btn-sm" type="submit">Save</button>
+        <button class="btn btn-sm" type="button" hx-get="/gui/tasks/{{ task.id }}" hx-target="#task-{{ task.id }}" hx-swap="outerHTML">Cancel</button>
+      </div>
+    </form>
+  </td>
+</tr>

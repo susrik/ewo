@@ -84,6 +84,22 @@ class JobsConfig(BaseModel):
     schedules: dict[str, str] = Field(default_factory=dict)
 
 
+class NotesConfig(BaseModel):
+    """Read-only access to a tree of markdown notes (ewo never writes into it).
+
+    ``people_dir`` is the folder holding one sub-folder per team member (used to
+    seed people and attribute items); ``exclude`` lists relative paths or
+    path prefixes to skip when scanning; ``window_days`` bounds a full rescan.
+    """
+
+    enabled: bool = False
+    root: Path = Path("~/notes")
+    people_dir: str = "swd/people"
+    exclude: list[str] = Field(default_factory=list)
+    window_days: int = 60
+    max_file_chars: int = 40_000
+
+
 class MCPConfig(BaseModel):
     http_enabled: bool = False
     http_port: int = 8765
@@ -100,11 +116,16 @@ class Config(BaseModel):
     reports_repo: ReportsRepoConfig = Field(default_factory=ReportsRepoConfig)
     jobs: JobsConfig = Field(default_factory=JobsConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    notes: NotesConfig = Field(default_factory=NotesConfig)
     api_base_url: str = "http://localhost:8000"
 
     @property
     def data_dir(self) -> Path:
         return self.storage.data_dir.expanduser()
+
+    @property
+    def notes_root(self) -> Path:
+        return self.notes.root.expanduser()
 
     @property
     def reports_clone_dir(self) -> Path:

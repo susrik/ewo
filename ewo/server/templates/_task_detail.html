@@ -1,0 +1,17 @@
+<div class="mt-2 p-3 rounded bg-base-200 text-sm grid gap-2">
+  {% if task.description %}<p class="whitespace-pre-line">{{ task.description }}</p>{% endif %}
+  <div class="opacity-70">
+    source: {{ task.source.value }} · created {{ task.created_at.strftime('%Y-%m-%d') }} · updated {{ task.updated_at.strftime('%Y-%m-%d') }}
+    {% for link in task.external_links %} · <span class="font-mono">{{ link.system }}:{{ link.external_key }}</span>{% endfor %}
+  </div>
+  <ul class="grid gap-1">
+    {% for note in task.notes %}
+    <li><span class="opacity-60">{{ note.created_at.strftime('%Y-%m-%d %H:%M') }}</span> {{ note.body }}</li>
+    {% endfor %}
+  </ul>
+  <form hx-post="/gui/tasks/{{ task.id }}/notes" hx-target="#task-{{ task.id }}-detail" class="flex gap-2">
+    <input class="input input-bordered input-sm flex-1" name="body" placeholder="Add a note" required>
+    <button class="btn btn-sm" type="submit">Note</button>
+    <button class="btn btn-sm btn-ghost" type="button" onclick="this.closest('div[id$=-detail]').innerHTML=''">Close</button>
+  </form>
+</div>

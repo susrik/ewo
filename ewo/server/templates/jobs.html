@@ -1,0 +1,34 @@
+{% extends "_layout.html" %}
+{% block content %}
+<div class="grid gap-6">
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Jobs</h2>
+      <table class="table table-sm">
+        <thead><tr><th>Job</th><th>Schedule</th><th></th></tr></thead>
+        <tbody>
+          {% for name, cron in jobs %}
+          <tr>
+            <td class="font-mono">{{ name }}</td>
+            <td class="font-mono text-sm">{{ cron or "—" }}</td>
+            <td><button class="btn btn-xs" hx-post="/gui/jobs/{{ name }}/run" hx-target="#job-runs" hx-indicator="#job-spinner">run now</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <span id="job-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Recent runs</h2>
+      <div id="job-runs" hx-get="/gui/job-runs" hx-trigger="every 30s">
+        {% include "_job_runs.html" %}
+      </div>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

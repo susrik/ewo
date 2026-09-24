@@ -5,8 +5,11 @@ from __future__ import annotations
 import anyio
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from ewo.config import Config
+from ewo.core import note_items
+from ewo.db.models import NoteItemKind
 from ewo.mcp.server import build_server
 from ewo.mcp.tools import EwoApi
 
@@ -46,6 +49,22 @@ def test_update_status_and_whatnext(api: EwoApi) -> None:
 def test_run_job(api: EwoApi) -> None:
     run = api.run_job("what_next")
     assert run["status"] == "success"
+    scan = api.run_job("notes_scan", full=True)
+    assert scan["result"] == "notes disabled"
+
+
+def test_inbox_tools(api: EwoApi, session: Session) -> None:
+    a, _ = note_items.upsert_item(session, "x.md", 1, "Accept me", NoteItemKind.ACTION)
+    b, _ = note_items.upsert_item(session, "x.md", 2, "Dismiss me", NoteItemKind.ACTION)
+    c, _ = note_items.upsert_item(session, "x.md", 3, "Done already", NoteItemKind.ACTION)
+    session.commit()
+    assert [i["summary"] for i in api.list_inbox()] == ["Accept me", "Dismiss me", "Done already"]
+
+    task = api.accept_inbox_item(a.id, priority="high")
+    assert task["title"] == "Accept me" and task["priority"] == "high"
+    assert api.resolve_inbox_item(b.id, already_done=False)["status"] == "dismissed"
+    assert api.resolve_inbox_item(c.id, already_done=True)["status"] == "already_done"
+    assert api.list_inbox() == []
 
 
 def test_build_server_registers_tools(config: Config, client: TestClient) -> None:
@@ -58,6 +77,9 @@ def test_build_server_registers_tools(config: Config, client: TestClient) -> Non
         "ewo_set_task_status",
         "ewo_what_next",
         "ewo_run_job",
+        "ewo_inbox_list",
+        "ewo_inbox_accept",
+        "ewo_inbox_resolve",
     }
 
 
@@ -69,6 +91,7 @@ def test_mcp_tool_calls_end_to_end(config: Config, client: TestClient) -> None:
         await server.call_tool("ewo_list_tasks", {})
         await server.call_tool("ewo_what_next", {})
         await server.call_tool("ewo_run_job", {"name": "what_next"})
+        await server.call_tool("ewo_inbox_list", {})
 
     anyio.run(calls)
     [task] = client.get("/api/tasks").json()
@@ -79,3 +102,19 @@ def test_mcp_tool_calls_end_to_end(config: Config, client: TestClient) -> None:
 
     anyio.run(set_status)
     assert client.get(f"/api/tasks/{task['id']}").json()["status"] == "done"
+
+
+def test_mcp_inbox_tools_end_to_end(config: Config, client: TestClient, session: Session) -> None:
+    server = build_server(config, api=EwoApi(config, client=client))
+    a, _ = note_items.upsert_item(session, "x.md", 1, "Accept via mcp", NoteItemKind.ACTION)
+    b, _ = note_items.upsert_item(session, "x.md", 2, "Drop via mcp", NoteItemKind.ACTION)
+    session.commit()
+
+    async def calls() -> None:
+        await server.call_tool("ewo_inbox_accept", {"item_id": a.id, "priority": "low"})
+        await server.call_tool("ewo_inbox_resolve", {"item_id": b.id, "already_done": True})
+
+    anyio.run(calls)
+    [task] = client.get("/api/tasks").json()
+    assert task["title"] == "Accept via mcp" and task["priority"] == "low"
+    assert client.get("/api/note-items", params={"status": "already_done"}).json()[0]["id"] == b.id

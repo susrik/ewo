@@ -1,0 +1,34 @@
+{% extends "_layout.html" %}
+{% block content %}
+<div class="grid gap-6">
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="card-title flex-1">Team</h2>
+        {% if notes_enabled %}
+        <button class="btn btn-sm" hx-post="/gui/people/seed" hx-target="#people-list" title="Create a person for each folder under the people directory in the notes tree">Seed from notes</button>
+        {% endif %}
+      </div>
+      <form hx-post="/gui/people" hx-target="#people-list" hx-on::after-request="this.reset()" class="flex flex-wrap gap-2">
+        <input class="input input-bordered input-sm" name="name" placeholder="Name" required>
+        <input class="input input-bordered input-sm" name="notes_dir" placeholder="notes folder, e.g. swd/people/sam">
+        <input class="input input-bordered input-sm" name="aliases" placeholder="aliases, comma separated">
+        <label class="label cursor-pointer gap-1 text-sm"><input type="checkbox" class="checkbox checkbox-sm" name="is_self" value="1"> this is me</label>
+        <button class="btn btn-sm" type="submit">Add</button>
+      </form>
+      <div id="people-list">
+        {% include "_people.html" %}
+      </div>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">1:1 meetings</h2>
+      <div id="one-on-ones" hx-get="/gui/one-on-ones" hx-trigger="load"></div>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

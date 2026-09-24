@@ -53,6 +53,7 @@ class TaskSource(enum.StrEnum):
     DISCORD = "discord"
     JIRA = "jira"
     MCP = "mcp"
+    NOTES = "notes"
 
 
 task_tags = Table(
@@ -64,14 +65,22 @@ task_tags = Table(
 
 
 class Person(Base):
+    """A team member (or the owner, ``is_self``) — not a login account.
+
+    ``notes_dir`` is the person's folder in the notes tree (e.g.
+    ``swd/people/robert``); ``aliases`` are other names the notes use for them.
+    Both drive attribution when scanning notes for outstanding items.
+    """
+
     __tablename__ = "people"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
-    email: Mapped[str | None] = mapped_column(String(320))
     jira_account_id: Mapped[str | None] = mapped_column(String(128))
     discord_user_id: Mapped[str | None] = mapped_column(String(64))
     is_self: Mapped[bool] = mapped_column(default=False)
+    notes_dir: Mapped[str | None] = mapped_column(String(500))
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     tasks: Mapped[list[Task]] = relationship(back_populates="assignee")
@@ -143,6 +152,55 @@ class Note(Base):
     person: Mapped[Person | None] = relationship()
 
 
+class NoteItemKind(enum.StrEnum):
+    ACTION = "action"
+    QUESTION = "question"
+    DEADLINE = "deadline"
+    RISK = "risk"
+
+
+class NoteItemStatus(enum.StrEnum):
+    NEW = "new"
+    ACCEPTED = "accepted"
+    DISMISSED = "dismissed"
+    ALREADY_DONE = "already_done"
+
+
+class NoteItem(Base):
+    """An outstanding item extracted from the notes tree — the review inbox.
+
+    Items are deduplicated by ``fingerprint``; re-scans only bump
+    ``last_seen_at``. Once reviewed (accepted/dismissed/already_done) an item is
+    never re-surfaced. ewo never modifies the source note.
+    """
+
+    __tablename__ = "note_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
+    path: Mapped[str] = mapped_column(String(1000))
+    line: Mapped[int] = mapped_column(Integer)
+    summary: Mapped[str] = mapped_column(String(500))
+    excerpt: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[NoteItemKind] = mapped_column(
+        Enum(NoteItemKind, native_enum=False, length=20), default=NoteItemKind.ACTION
+    )
+    status: Mapped[NoteItemStatus] = mapped_column(
+        Enum(NoteItemStatus, native_enum=False, length=20), default=NoteItemStatus.NEW
+    )
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
+    owner_name: Mapped[str | None] = mapped_column(String(200))
+    due_date: Mapped[date | None] = mapped_column(Date)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"))
+    job_run_id: Mapped[int | None] = mapped_column(ForeignKey("job_runs.id", ondelete="SET NULL"))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    owner: Mapped[Person | None] = relationship()
+    task: Mapped[Task | None] = relationship()
+
+
 class AgendaItemStatus(enum.StrEnum):
     OPEN = "open"
     DISCUSSED = "discussed"
@@ -194,6 +252,7 @@ class JobRun(Base):
     )
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    result: Mapped[str | None] = mapped_column(String(500))
     error: Mapped[str | None] = mapped_column(Text)
     tokens_used: Mapped[int] = mapped_column(Integer, default=0)
 

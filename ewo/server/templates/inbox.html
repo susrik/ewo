@@ -1,0 +1,55 @@
+{% extends "_layout.html" %}
+{% block content %}
+<div class="grid gap-6">
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-3">
+        <h2 class="card-title flex-1">Scan notes</h2>
+        {% if notes_enabled %}
+        <form hx-post="/gui/scan" hx-target="#scan-result" hx-indicator="#scan-spinner" class="flex gap-2">
+          <button class="btn btn-primary btn-sm" name="full" value="false">Scan changed notes</button>
+          <button class="btn btn-sm" name="full" value="true" title="Re-read every note in the window">Full rescan</button>
+          <span id="scan-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
+        </form>
+        {% else %}
+        <span class="badge badge-warning">notes disabled in config</span>
+        {% endif %}
+      </div>
+      <div id="scan-result" class="text-sm">
+        {% if last_scan %}
+        {% with run = last_scan %}{% include "_scan_result.html" %}{% endwith %}
+        {% else %}
+        <span class="opacity-60">Never scanned.</span>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="card-title flex-1">Inbox <span class="badge badge-primary" id="inbox-count">{{ count }}</span></h2>
+        <form hx-get="/gui/inbox" hx-target="#inbox-list" hx-trigger="change" class="flex gap-2">
+          <select class="select select-bordered select-sm" name="status">
+            {% for s in item_statuses %}<option value="{{ s.value }}" {% if filters.status == s.value %}selected{% endif %}>{{ s.value }}</option>{% endfor %}
+            <option value="all" {% if filters.status == 'all' %}selected{% endif %}>all</option>
+          </select>
+          <select class="select select-bordered select-sm" name="owner">
+            <option value="">anyone</option>
+            {% for person in people %}<option value="{{ person.id }}" {% if filters.owner == person.id|string %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
+          </select>
+        </form>
+      </div>
+      <p class="text-sm opacity-70">
+        Items found in your notes. <b>Accept</b> creates a tracked task; <b>Dismiss</b> if it isn't actionable;
+        <b>Already done</b> if the note is stale — the note itself is never modified.
+      </p>
+      <div id="inbox-list">
+        {% include "_inbox.html" %}
+      </div>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

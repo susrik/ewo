@@ -13,22 +13,67 @@ from ewo.db.models import TaskPriority, TaskSource, TaskStatus
 
 
 def test_person_crud(session: Session) -> None:
-    person = people.create_person(session, "Anna", email="anna@x.com")
+    person = people.create_person(session, "Anna", aliases=["Ann"])
     assert person.id is not None
 
     fetched = people.get_person(session, person.id)
     assert fetched.name == "Anna"
+    assert fetched.aliases == ["Ann"]
 
     assert people.find_person_by_name(session, "anna") is not None
     assert people.find_person_by_name(session, "nobody") is None
 
-    people.update_person(session, person.id, email="new@x.com")
-    assert people.get_person(session, person.id).email == "new@x.com"
+    people.update_person(session, person.id, notes_dir="swd/people/anna")
+    assert people.get_person(session, person.id).notes_dir == "swd/people/anna"
 
     assert [p.name for p in people.list_people(session)] == ["Anna"]
 
     people.delete_person(session, person.id)
     assert people.list_people(session) == []
+
+
+def test_single_self(session: Session) -> None:
+    me = people.create_person(session, "Me", is_self=True)
+    assert people.get_self(session) is me
+    other = people.create_person(session, "Other", is_self=True)
+    assert people.get_self(session) is other
+    assert people.get_person(session, me.id).is_self is False
+    people.update_person(session, me.id, is_self=True)
+    assert people.get_person(session, other.id).is_self is False
+
+
+def test_resolve_person(session: Session) -> None:
+    james_l = people.create_person(session, "James L", notes_dir="swd/people/james_l")
+    james_s = people.create_person(
+        session, "James S", notes_dir="swd/people/james_s", aliases=["James"]
+    )
+    people.create_person(session, "Sam", aliases=["Samuel"])
+
+    # folder wins over an ambiguous name
+    assert people.resolve_person(session, "James", "swd/people/james_l/2026-09-01-x.md") is james_l
+    assert people.resolve_person(session, None, "swd/people/james_s/old.md") is james_s
+    # unique alias resolves, exact name resolves, unknown does not
+    assert people.resolve_person(session, "samuel", "misc/note.md").name == "Sam"
+    assert people.resolve_person(session, "james s", None) is james_s
+    assert people.resolve_person(session, "Nobody", "misc/note.md") is None
+    assert people.resolve_person(session, None, None) is None
+
+
+def test_ambiguous_alias_resolves_to_nobody(session: Session) -> None:
+    people.create_person(session, "James L", aliases=["James"])
+    people.create_person(session, "James S", aliases=["James"])
+    assert people.resolve_person(session, "James", "misc/note.md") is None
+
+
+def test_seed_from_notes(session: Session) -> None:
+    people.create_person(session, "Sam")  # exists without notes_dir -> gets linked
+    created = people.seed_from_notes(
+        session, ["swd/people/james_l", "swd/people/sam", "swd/people/neda"]
+    )
+    assert sorted(p.name for p in created) == ["James L", "Neda"]
+    assert people.find_person_by_name(session, "Sam").notes_dir == "swd/people/sam"  # type: ignore[union-attr]
+    # idempotent
+    assert people.seed_from_notes(session, ["swd/people/sam", "swd/people/neda"]) == []
 
 
 def test_person_not_found(session: Session) -> None:

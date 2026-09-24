@@ -3,6 +3,8 @@
 - jira_sync:    pull configured JQL, create/update linked tasks
 - daily_report: generate daily markdown, publish to reports repo, email it
 - what_next:    generate a what-next report and publish it
+- notes_scan:   extract outstanding items from notes changed since the last
+                successful scan into the inbox (``full=true`` rescans the window)
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from datetime import UTC, datetime
 
 from ewo.core import reports
 from ewo.core.llm import LLMClient
+from ewo.core.note_extract import last_successful_scan, scan_notes
 from ewo.core.report_publisher import publish_report
 from ewo.core.whatnext import what_next_markdown
 from ewo.integrations.google import HttpGoogleClient
@@ -62,3 +65,24 @@ def what_next(context: JobContext) -> str:
     body = what_next_markdown(context.session, llm=_llm_or_none(context))
     _publish_and_record(context, "what-next", body)
     return "ok"
+
+
+@registry.register("notes_scan")
+def notes_scan(context: JobContext) -> str:
+    notes = context.config.notes
+    if not notes.enabled:
+        return "notes disabled"
+    if not context.config.llm.api_key:
+        raise RuntimeError("notes_scan needs llm.api_key")
+    since = None if context.flag("full") else last_successful_scan(context.session)
+    summary = scan_notes(
+        context.session,
+        context.llm,
+        notes.model_copy(update={"root": context.config.notes_root}),
+        since=since,
+        job_run_id=context.job_run.id,
+    )
+    context.add_tokens(summary.tokens)
+    if summary.errors and summary.files == len(summary.errors):
+        raise RuntimeError("; ".join(summary.errors))
+    return summary.as_text()

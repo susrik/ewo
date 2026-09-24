@@ -80,14 +80,95 @@ def test_person_add_and_list(config_file: str) -> None:
     respx.post(f"{BASE}/api/people").mock(
         return_value=Response(201, json={"id": 1, "name": "Anna"})
     )
-    result = _invoke(["person", "add", "Anna", "--email", "a@x.com"], config_file)
+    result = _invoke(
+        ["person", "add", "Anna", "--alias", "Ann", "--notes-dir", "swd/people/anna", "--self"],
+        config_file,
+    )
     assert result.exit_code == 0  # type: ignore[attr-defined]
+    payload = json.loads(respx.calls.last.request.content)
+    assert payload["aliases"] == ["Ann"]
+    assert payload["notes_dir"] == "swd/people/anna"
+    assert payload["is_self"] is True
+    assert "email" not in payload
 
     respx.get(f"{BASE}/api/people").mock(
-        return_value=Response(200, json=[{"id": 1, "name": "Anna", "email": None}])
+        return_value=Response(
+            200,
+            json=[
+                {"id": 1, "name": "Anna", "is_self": True, "notes_dir": "swd/people/anna"},
+                {"id": 2, "name": "Bob", "is_self": False, "notes_dir": None},
+            ],
+        )
     )
     result = _invoke(["person", "list"], config_file)
-    assert "#1 Anna" in result.output  # type: ignore[attr-defined]
+    assert "#1 Anna (me) [swd/people/anna]" in result.output  # type: ignore[attr-defined]
+    assert "#2 Bob\n" in result.output  # type: ignore[attr-defined]
+
+
+@respx.mock
+def test_person_seed(config_file: str) -> None:
+    respx.post(f"{BASE}/api/people/seed-from-notes").mock(
+        return_value=Response(
+            200, json={"created": [{"id": 3, "name": "Neda", "notes_dir": "swd/people/neda"}]}
+        )
+    )
+    result = _invoke(["person", "seed"], config_file)
+    assert "created #3 Neda [swd/people/neda]" in result.output  # type: ignore[attr-defined]
+
+    respx.post(f"{BASE}/api/people/seed-from-notes").mock(
+        return_value=Response(200, json={"created": []})
+    )
+    result = _invoke(["person", "seed"], config_file)
+    assert "nothing to add" in result.output  # type: ignore[attr-defined]
+
+
+@respx.mock
+def test_inbox_commands(config_file: str) -> None:
+    respx.get(f"{BASE}/api/note-items").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "id": 7,
+                    "kind": "action",
+                    "summary": "chase Matti",
+                    "owner": {"name": "Me"},
+                    "owner_name": "Erik",
+                    "due_date": "2026-10-01",
+                    "path": "eurohpc/x.md",
+                    "line": 34,
+                },
+                {
+                    "id": 8,
+                    "kind": "risk",
+                    "summary": "budget",
+                    "owner": None,
+                    "owner_name": None,
+                    "due_date": None,
+                    "path": "ai/y.md",
+                    "line": 2,
+                },
+            ],
+        )
+    )
+    result = _invoke(["inbox", "list", "--status", "all"], config_file)
+    assert "#7 [action] chase Matti @Me due 2026-10-01  (eurohpc/x.md:34)" in result.output  # type: ignore[attr-defined]
+    assert "#8 [risk] budget @-  (ai/y.md:2)" in result.output  # type: ignore[attr-defined]
+
+    accept = respx.post(f"{BASE}/api/note-items/7/accept").mock(
+        return_value=Response(201, json={"id": 12, "title": "chase Matti"})
+    )
+    result = _invoke(
+        ["inbox", "accept", "7", "--priority", "high", "--due", "2026-10-01"], config_file
+    )
+    assert "task #12 created: chase Matti" in result.output  # type: ignore[attr-defined]
+    assert json.loads(accept.calls[0].request.content)["priority"] == "high"
+
+    respx.post(f"{BASE}/api/note-items/8/dismiss").mock(return_value=Response(200, json={"id": 8}))
+    assert "item #8 dismissed" in _invoke(["inbox", "dismiss", "8"], config_file).output  # type: ignore[attr-defined]
+
+    respx.post(f"{BASE}/api/note-items/8/done").mock(return_value=Response(200, json={"id": 8}))
+    assert "already done" in _invoke(["inbox", "done", "8"], config_file).output  # type: ignore[attr-defined]
 
 
 @respx.mock
@@ -129,11 +210,12 @@ def test_jobs_commands(config_file: str) -> None:
     result = _invoke(["jobs", "list"], config_file)
     assert "daily_report" in result.output  # type: ignore[attr-defined]
 
-    respx.post(f"{BASE}/api/jobs/jira_sync/run").mock(
-        return_value=Response(200, json={"id": 1, "job_name": "jira_sync", "status": "success"})
+    run_route = respx.post(f"{BASE}/api/jobs/notes_scan/run").mock(
+        return_value=Response(200, json={"id": 1, "job_name": "notes_scan", "status": "success"})
     )
-    result = _invoke(["jobs", "run", "jira_sync"], config_file)
+    result = _invoke(["jobs", "run", "notes_scan", "--full"], config_file)
     assert "success" in result.output  # type: ignore[attr-defined]
+    assert "full=true" in str(run_route.calls[0].request.url)
 
     respx.get(f"{BASE}/api/jobs/runs").mock(
         return_value=Response(
@@ -145,12 +227,14 @@ def test_jobs_commands(config_file: str) -> None:
                     "status": "success",
                     "started_at": "2026-08-30T07:00:00",
                     "tokens_used": 0,
+                    "result": "files=3 new=2",
                 }
             ],
         )
     )
     result = _invoke(["jobs", "runs"], config_file)
     assert "#1 jira_sync success" in result.output  # type: ignore[attr-defined]
+    assert "files=3 new=2" in result.output  # type: ignore[attr-defined]
 
 
 def test_google_auth(config_file: str, monkeypatch: pytest.MonkeyPatch) -> None:

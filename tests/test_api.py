@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from ewo.config import NotesConfig
+from ewo.core import note_items
+from ewo.db.models import NoteItemKind
 
 
 def _create_person(client: TestClient, name: str = "Anna") -> int:
@@ -26,15 +33,19 @@ def test_people_crud(client: TestClient) -> None:
     assert client.get("/api/people").json()[0]["name"] == "Anna"
     assert client.get(f"/api/people/{person_id}").status_code == 200
 
-    patched = client.patch(f"/api/people/{person_id}", json={"email": "a@x.com"})
-    assert patched.json()["email"] == "a@x.com"
+    patched = client.patch(
+        f"/api/people/{person_id}", json={"notes_dir": "swd/people/anna", "aliases": ["Ann"]}
+    )
+    assert patched.json()["notes_dir"] == "swd/people/anna"
+    assert patched.json()["aliases"] == ["Ann"]
+    assert "email" not in patched.json()
 
     assert client.delete(f"/api/people/{person_id}").status_code == 200
     assert client.get(f"/api/people/{person_id}").status_code == 404
 
 
 def test_people_404s(client: TestClient) -> None:
-    assert client.patch("/api/people/999", json={"email": "x"}).status_code == 404
+    assert client.patch("/api/people/999", json={"name": "x"}).status_code == 404
     assert client.delete("/api/people/999").status_code == 404
 
 
@@ -159,6 +170,72 @@ def test_jobs_endpoints(client: TestClient) -> None:
 
     runs = client.get("/api/jobs/runs").json()
     assert runs[0]["job_name"] == "what_next"
+    assert runs[0]["result"] == "ok"
+
+    scan = client.post("/api/jobs/notes_scan/run", params={"full": True}).json()
+    assert scan["status"] == "success" and scan["result"] == "notes disabled"
+
+
+# --- people from notes / inbox ---
+
+
+def test_seed_people_requires_notes(client: TestClient) -> None:
+    assert client.post("/api/people/seed-from-notes").status_code == 400
+
+
+def test_seed_people_from_notes(client: TestClient, notes_root: Path) -> None:
+    client.app.state.config.notes = NotesConfig(enabled=True, root=notes_root)  # type: ignore[attr-defined]
+    created = client.post("/api/people/seed-from-notes").json()["created"]
+    assert [p["name"] for p in created] == ["James L", "James S"]
+    assert created[0]["notes_dir"] == "swd/people/james_l"
+    assert client.post("/api/people/seed-from-notes").json()["created"] == []
+
+
+def test_note_items_endpoints(client: TestClient, session: Session) -> None:
+    owner_id = _create_person(client, "Neda")
+    item, _ = note_items.upsert_item(
+        session, "swd/x.md", 7, "Add SSO", NoteItemKind.ACTION, owner_id=owner_id
+    )
+    other, _ = note_items.upsert_item(session, "ai/y.md", 2, "Budget", NoteItemKind.RISK)
+    third, _ = note_items.upsert_item(session, "ai/z.md", 9, "Old thing", NoteItemKind.ACTION)
+    session.commit()
+
+    listed = client.get("/api/note-items").json()
+    assert [i["summary"] for i in listed] == ["Budget", "Old thing", "Add SSO"]
+    assert listed[2]["owner"]["name"] == "Neda"
+    assert client.get("/api/note-items", params={"owner_id": owner_id}).json()[0]["id"] == item.id
+    assert len(client.get("/api/note-items", params={"path_prefix": "ai/"}).json()) == 2
+
+    patched = client.patch(f"/api/note-items/{item.id}", json={"summary": "Add SSO to glitchtip"})
+    assert patched.json()["summary"] == "Add SSO to glitchtip"
+
+    accepted = client.post(
+        f"/api/note-items/{item.id}/accept", json={"priority": "high", "due_date": "2026-10-01"}
+    )
+    assert accepted.status_code == 201
+    task = accepted.json()
+    assert task["source"] == "notes" and task["assignee"]["name"] == "Neda"
+    assert task["external_links"][0] == {
+        **task["external_links"][0],
+        "system": "notes",
+        "external_key": f"swd/x.md:7:{item.id}",
+    }
+
+    assert client.post(f"/api/note-items/{other.id}/dismiss").json()["status"] == "dismissed"
+    assert client.post(f"/api/note-items/{third.id}/done").json()["status"] == "already_done"
+    assert client.get("/api/note-items").json() == []
+    assert len(client.get("/api/note-items", params={"status": ""}).json()) == 3
+    assert (
+        client.get("/api/note-items", params={"status": "accepted"}).json()[0]["task_id"]
+        == task["id"]
+    )
+
+
+def test_note_items_404s(client: TestClient) -> None:
+    assert client.patch("/api/note-items/999", json={"summary": "x"}).status_code == 404
+    assert client.post("/api/note-items/999/accept", json={}).status_code == 404
+    assert client.post("/api/note-items/999/dismiss").status_code == 404
+    assert client.post("/api/note-items/999/done").status_code == 404
 
 
 def test_reports_endpoints(client: TestClient) -> None:
