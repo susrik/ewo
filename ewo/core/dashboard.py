@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ewo.config import Config
-from ewo.core import note_items
+from ewo.core import nuggets
 from ewo.core.people import get_self
 from ewo.core.tasks import list_tasks
 from ewo.db.models import JobRun, JobRunStatus, TaskPriority, TaskStatus
@@ -44,7 +44,7 @@ def build_dashboard(session: Session, config: Config, today: date | None = None)
             elif (task.due_date - today).days <= 7:
                 board.due_soon += 1
 
-    board.inbox_new = note_items.count_new(session)
+    board.inbox_new = nuggets.count_new(session)
 
     since = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=24)
     board.failed_jobs_24h = (

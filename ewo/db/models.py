@@ -96,6 +96,12 @@ class Tag(Base):
 
 
 class Task(Base):
+    """A coherent, user-facing piece of work (a topic).
+
+    Tasks form an arbitrary-depth tree (single parent, many children) and
+    collect ``nuggets`` — work items extracted from the notes tree.
+    """
+
     __tablename__ = "tasks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -111,22 +117,35 @@ class Task(Base):
         Enum(TaskSource, native_enum=False, length=20), default=TaskSource.MANUAL
     )
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"))
+    start_date: Mapped[date | None] = mapped_column(Date)
     due_date: Mapped[date | None] = mapped_column(Date)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     extra: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     assignee: Mapped[Person | None] = relationship(back_populates="tasks")
+    parent: Mapped[Task | None] = relationship(remote_side="Task.id", back_populates="children")
+    children: Mapped[list[Task]] = relationship(back_populates="parent")
     tags: Mapped[list[Tag]] = relationship(secondary=task_tags, back_populates="tasks")
     external_links: Mapped[list[ExternalLink]] = relationship(
         back_populates="task", cascade="all, delete-orphan"
     )
     notes: Mapped[list[Note]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    nuggets: Mapped[list[Nugget]] = relationship(
+        back_populates="task", foreign_keys="Nugget.task_id"
+    )
 
 
 class ExternalLink(Base):
+    """Task ↔ external system. One external key can sit on many tasks (e.g.
+    several tasks relate to one Jira issue), but only once per task."""
+
     __tablename__ = "external_links"
-    __table_args__ = (UniqueConstraint("system", "external_key"),)
+    __table_args__ = (
+        UniqueConstraint("system", "external_key", "task_id", name="uq_external_links_key_task"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
@@ -152,29 +171,38 @@ class Note(Base):
     person: Mapped[Person | None] = relationship()
 
 
-class NoteItemKind(enum.StrEnum):
+class NuggetKind(enum.StrEnum):
     ACTION = "action"
     QUESTION = "question"
     DEADLINE = "deadline"
     RISK = "risk"
 
 
-class NoteItemStatus(enum.StrEnum):
+class NuggetStatus(enum.StrEnum):
     NEW = "new"
-    ACCEPTED = "accepted"
+    ATTACHED = "attached"
     DISMISSED = "dismissed"
     ALREADY_DONE = "already_done"
 
 
-class NoteItem(Base):
-    """An outstanding item extracted from the notes tree — the review inbox.
+class Nugget(Base):
+    """A work item extracted from the notes tree — the review inbox.
 
-    Items are deduplicated by ``fingerprint``; re-scans only bump
-    ``last_seen_at``. Once reviewed (accepted/dismissed/already_done) an item is
-    never re-surfaced. ewo never modifies the source note.
+    A nugget is a potential piece of work with a citation (``path``:``line``).
+    Reviewing attaches it to a task (new or existing), dismisses it, or marks
+    it already done. Attached nuggets stay visible on their task and can be
+    moved between tasks or detached back to the inbox.
+
+    Nuggets are deduplicated by ``fingerprint``; re-scans only bump
+    ``last_seen_at``. Once reviewed (attached/dismissed/already_done) a nugget
+    is never re-surfaced. ewo never modifies the source note.
+
+    ``jira_keys`` are Jira issue keys (e.g. ``DBOARD3-1111``) captured from the
+    note at extraction time; attaching adds them as task links.
+    ``suggested_task_id`` holds the candidate task computed by ``nuggets_match``.
     """
 
-    __tablename__ = "note_items"
+    __tablename__ = "nuggets"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
@@ -182,23 +210,28 @@ class NoteItem(Base):
     line: Mapped[int] = mapped_column(Integer)
     summary: Mapped[str] = mapped_column(String(500))
     excerpt: Mapped[str | None] = mapped_column(Text)
-    kind: Mapped[NoteItemKind] = mapped_column(
-        Enum(NoteItemKind, native_enum=False, length=20), default=NoteItemKind.ACTION
+    kind: Mapped[NuggetKind] = mapped_column(
+        Enum(NuggetKind, native_enum=False, length=20), default=NuggetKind.ACTION
     )
-    status: Mapped[NoteItemStatus] = mapped_column(
-        Enum(NoteItemStatus, native_enum=False, length=20), default=NoteItemStatus.NEW
+    status: Mapped[NuggetStatus] = mapped_column(
+        Enum(NuggetStatus, native_enum=False, length=20), default=NuggetStatus.NEW
     )
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
     owner_name: Mapped[str | None] = mapped_column(String(200))
     due_date: Mapped[date | None] = mapped_column(Date)
+    jira_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
     task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"))
+    suggested_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL")
+    )
     job_run_id: Mapped[int | None] = mapped_column(ForeignKey("job_runs.id", ondelete="SET NULL"))
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     owner: Mapped[Person | None] = relationship()
-    task: Mapped[Task | None] = relationship()
+    task: Mapped[Task | None] = relationship(foreign_keys=[task_id], back_populates="nuggets")
+    suggested_task: Mapped[Task | None] = relationship(foreign_keys=[suggested_task_id])
 
 
 class AgendaItemStatus(enum.StrEnum):

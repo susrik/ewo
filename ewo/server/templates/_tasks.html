@@ -3,7 +3,7 @@
     <tr><th>Task</th><th>Assignee</th><th>Priority</th><th>Due</th><th>Status</th><th></th></tr>
   </thead>
   <tbody>
-    {% for task in tasks %}
+    {% for task, depth in rows %}
     {% include "_task_row.html" %}
     {% else %}
     <tr><td colspan="6" class="opacity-60">No tasks match.</td></tr>

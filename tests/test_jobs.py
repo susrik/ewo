@@ -56,7 +56,21 @@ def test_registry_unknown_job(
 
 
 def test_builtin_jobs_registered() -> None:
-    assert {"jira_sync", "daily_report", "what_next"} <= set(registry.names())
+    assert {"jira_sync", "daily_report", "what_next", "notes_scan", "nuggets_match"} <= set(
+        registry.names()
+    )
+
+
+def test_nuggets_match_job(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM
+) -> None:
+    run = registry.run("nuggets_match", session_factory, config, fake_llm)
+    assert run.status == JobRunStatus.FAILED and "llm.api_key" in str(run.error)
+
+    config.llm.api_key = "sk"
+    run = registry.run("nuggets_match", session_factory, config, fake_llm)
+    assert run.status == JobRunStatus.SUCCESS
+    assert run.result is not None and run.result.startswith("reviewed=0")
 
 
 def test_what_next_job_uses_llm_when_key_configured(

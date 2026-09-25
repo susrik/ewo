@@ -124,7 +124,7 @@ def test_person_seed(config_file: str) -> None:
 
 @respx.mock
 def test_inbox_commands(config_file: str) -> None:
-    respx.get(f"{BASE}/api/note-items").mock(
+    respx.get(f"{BASE}/api/nuggets").mock(
         return_value=Response(
             200,
             json=[
@@ -135,6 +135,8 @@ def test_inbox_commands(config_file: str) -> None:
                     "owner": {"name": "Me"},
                     "owner_name": "Erik",
                     "due_date": "2026-10-01",
+                    "jira_keys": ["PROJ-1"],
+                    "suggested_task_id": None,
                     "path": "eurohpc/x.md",
                     "line": 34,
                 },
@@ -145,6 +147,8 @@ def test_inbox_commands(config_file: str) -> None:
                     "owner": None,
                     "owner_name": None,
                     "due_date": None,
+                    "jira_keys": [],
+                    "suggested_task_id": 12,
                     "path": "ai/y.md",
                     "line": 2,
                 },
@@ -152,22 +156,27 @@ def test_inbox_commands(config_file: str) -> None:
         )
     )
     result = _invoke(["inbox", "list", "--status", "all"], config_file)
-    assert "#7 [action] chase Matti @Me due 2026-10-01  (eurohpc/x.md:34)" in result.output  # type: ignore[attr-defined]
-    assert "#8 [risk] budget @-  (ai/y.md:2)" in result.output  # type: ignore[attr-defined]
+    assert "#7 [action] chase Matti @Me due 2026-10-01 [PROJ-1]  (eurohpc/x.md:34)" in result.output  # type: ignore[attr-defined]
+    assert "#8 [risk] budget @- → task #12  (ai/y.md:2)" in result.output  # type: ignore[attr-defined]
 
-    accept = respx.post(f"{BASE}/api/note-items/7/accept").mock(
+    attach = respx.post(f"{BASE}/api/nuggets/7/attach").mock(
         return_value=Response(201, json={"id": 12, "title": "chase Matti"})
     )
     result = _invoke(
-        ["inbox", "accept", "7", "--priority", "high", "--due", "2026-10-01"], config_file
+        ["inbox", "attach", "7", "--priority", "high", "--due", "2026-10-01"], config_file
     )
     assert "task #12 created: chase Matti" in result.output  # type: ignore[attr-defined]
-    assert json.loads(accept.calls[0].request.content)["priority"] == "high"
+    sent = json.loads(attach.calls[0].request.content)
+    assert sent["priority"] == "high" and sent["task_id"] is None
 
-    respx.post(f"{BASE}/api/note-items/8/dismiss").mock(return_value=Response(200, json={"id": 8}))
-    assert "item #8 dismissed" in _invoke(["inbox", "dismiss", "8"], config_file).output  # type: ignore[attr-defined]
+    result = _invoke(["inbox", "attach", "7", "--task-id", "12"], config_file)
+    assert "task #12 attached to: chase Matti" in result.output  # type: ignore[attr-defined]
+    assert json.loads(attach.calls[1].request.content)["task_id"] == 12
 
-    respx.post(f"{BASE}/api/note-items/8/done").mock(return_value=Response(200, json={"id": 8}))
+    respx.post(f"{BASE}/api/nuggets/8/dismiss").mock(return_value=Response(200, json={"id": 8}))
+    assert "nugget #8 dismissed" in _invoke(["inbox", "dismiss", "8"], config_file).output  # type: ignore[attr-defined]
+
+    respx.post(f"{BASE}/api/nuggets/8/done").mock(return_value=Response(200, json={"id": 8}))
     assert "already done" in _invoke(["inbox", "done", "8"], config_file).output  # type: ignore[attr-defined]
 
 

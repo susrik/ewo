@@ -9,8 +9,8 @@ from pydantic import BaseModel, ConfigDict
 from ewo.db.models import (
     AgendaItemStatus,
     JobRunStatus,
-    NoteItemKind,
-    NoteItemStatus,
+    NuggetKind,
+    NuggetStatus,
     TaskPriority,
     TaskSource,
     TaskStatus,
@@ -79,6 +79,8 @@ class TaskCreate(BaseModel):
     priority: TaskPriority = TaskPriority.NORMAL
     source: TaskSource = TaskSource.MANUAL
     assignee_id: int | None = None
+    parent_id: int | None = None
+    start_date: date | None = None
     due_date: date | None = None
     tags: list[str] = []
 
@@ -89,6 +91,8 @@ class TaskUpdate(BaseModel):
     status: TaskStatus | None = None
     priority: TaskPriority | None = None
     assignee_id: int | None = None
+    parent_id: int | None = None
+    start_date: date | None = None
     due_date: date | None = None
     tags: list[str] | None = None
 
@@ -102,11 +106,20 @@ class TaskOut(ORMModel):
     source: TaskSource
     assignee_id: int | None
     assignee: PersonOut | None
+    parent_id: int | None
+    start_date: date | None
     due_date: date | None
+    completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
     tags: list[TagOut]
     external_links: list[ExternalLinkOut]
+
+
+class LinkCreate(BaseModel):
+    system: str
+    external_key: str
+    url: str | None = None
 
 
 class NoteCreate(BaseModel):
@@ -123,39 +136,48 @@ class NoteOut(ORMModel):
     created_at: datetime
 
 
-# --- note items (inbox) ---
+# --- nuggets (inbox: work items extracted from notes) ---
 
 
-class NoteItemOut(ORMModel):
+class NuggetOut(ORMModel):
     id: int
     path: str
     line: int
     summary: str
     excerpt: str | None
-    kind: NoteItemKind
-    status: NoteItemStatus
+    kind: NuggetKind
+    status: NuggetStatus
     owner_id: int | None
     owner: PersonOut | None
     owner_name: str | None
     due_date: date | None
+    jira_keys: list[str]
     task_id: int | None
+    suggested_task_id: int | None
     first_seen_at: datetime
     last_seen_at: datetime
     reviewed_at: datetime | None
 
 
-class NoteItemUpdate(BaseModel):
+class NuggetUpdate(BaseModel):
     summary: str | None = None
     owner_id: int | None = None
     due_date: date | None = None
-    kind: NoteItemKind | None = None
+    kind: NuggetKind | None = None
 
 
-class NoteItemAccept(BaseModel):
+class NuggetAttach(BaseModel):
+    """Attach to an existing task (``task_id``) or create a new one from the nugget."""
+
+    task_id: int | None = None
     title: str | None = None
     priority: TaskPriority = TaskPriority.NORMAL
     assignee_id: int | None = None
     due_date: date | None = None
+
+
+class NuggetMove(BaseModel):
+    task_id: int
 
 
 # --- one-on-ones ---

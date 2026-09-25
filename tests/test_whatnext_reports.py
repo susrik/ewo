@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from ewo.core import note_items, people, reports, tasks
+from ewo.core import nuggets, people, reports, tasks
 from ewo.core.llm import FakeLLM
 from ewo.core.whatnext import (
     rank_all,
@@ -16,7 +16,7 @@ from ewo.core.whatnext import (
     what_next,
     what_next_markdown,
 )
-from ewo.db.models import NoteItemKind, TaskPriority, TaskStatus
+from ewo.db.models import NuggetKind, TaskPriority, TaskStatus
 
 
 def _now() -> datetime:
@@ -76,9 +76,9 @@ def test_rank_all_uses_self_notes_and_jitter(session: Session) -> None:
     a = tasks.create_task(session, "a", assignee_id=me.id)
     tasks.create_task(session, "b")
     tasks.create_task(session, "c")
-    item, _ = note_items.upsert_item(session, "n.md", 1, "b", NoteItemKind.ACTION)
+    item, _ = nuggets.upsert_nugget(session, "n.md", 1, "b", NuggetKind.ACTION)
     session.commit()
-    note_items.accept_item(session, item.id)  # creates a 4th task linked to the note
+    nuggets.attach_nugget(session, item.id)  # creates a 4th task linked to the note
     linked = item.task_id
 
     ranked = rank_all(session, seed="fixed")

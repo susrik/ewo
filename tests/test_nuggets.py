@@ -1,0 +1,311 @@
+"""Nugget attach/move/detach, task suggestions, and AI task organization."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from sqlalchemy.orm import Session
+
+from ewo.core import nuggets, task_organize, tasks
+from ewo.core.llm import FakeLLM
+from ewo.core.nugget_match import suggest_matches
+from ewo.core.people import NotFoundError
+from ewo.db.models import Nugget, NuggetKind, NuggetStatus
+
+
+def _nugget(
+    session: Session,
+    summary: str,
+    path: str = "swd/x.md",
+    line: int = 1,
+    jira_keys: list[str] | None = None,
+) -> Nugget:
+    nugget, _ = nuggets.upsert_nugget(
+        session, path, line, summary, NuggetKind.ACTION, jira_keys=jira_keys
+    )
+    session.commit()
+    return nugget
+
+
+# --- attach to an existing task / move / detach ---
+
+
+def test_attach_to_existing_task(session: Session) -> None:
+    task = tasks.create_task(session, "existing topic")
+    item = _nugget(session, "extra detail", jira_keys=["PROJ-1"])
+
+    attached = nuggets.attach_nugget(
+        session, item.id, task_id=task.id, jira_base_url="https://jira.example/"
+    )
+    assert attached.id == task.id
+    assert attached.title == "existing topic"  # untouched
+    nugget = nuggets.get_nugget(session, item.id)
+    assert nugget.status == NuggetStatus.ATTACHED and nugget.task_id == task.id
+    keys = {(link.system, link.external_key) for link in attached.external_links}
+    assert ("notes", f"swd/x.md:1:{item.id}") in keys
+    assert ("jira", "PROJ-1") in keys
+    jira = next(link for link in attached.external_links if link.system == "jira")
+    assert jira.url == "https://jira.example/browse/PROJ-1"
+
+    # attaching a second nugget with the same key does not duplicate the link
+    twin = _nugget(session, "same ticket again", path="swd/y.md", jira_keys=["PROJ-1"])
+    nuggets.attach_nugget(session, twin.id, task_id=task.id)
+    assert [x.external_key for x in attached.external_links if x.system == "jira"] == ["PROJ-1"]
+
+
+def test_attach_to_missing_task_404(session: Session) -> None:
+    item = _nugget(session, "orphan")
+    with pytest.raises(NotFoundError):
+        nuggets.attach_nugget(session, item.id, task_id=999)
+
+
+def test_attach_does_not_duplicate_citation(session: Session) -> None:
+    """If the task already carries this nugget's citation link, keep just one."""
+    task = tasks.create_task(session, "topic")
+    item = _nugget(session, "detail")
+    tasks.link_external(session, task.id, "notes", f"swd/x.md:1:{item.id}")
+    nuggets.attach_nugget(session, item.id, task_id=task.id)
+    citations = [x for x in task.external_links if x.system == "notes"]
+    assert len(citations) == 1
+
+
+def test_move_and_detach_nugget(session: Session) -> None:
+    first = tasks.create_task(session, "first")
+    second = tasks.create_task(session, "second")
+    item = _nugget(session, "traveler")
+    nuggets.attach_nugget(session, item.id, task_id=first.id)
+    citation = tasks.find_link(session, "notes", f"swd/x.md:1:{item.id}")
+    assert citation is not None and citation.task_id == first.id
+
+    moved = nuggets.move_nugget(session, item.id, second.id)
+    assert moved.task_id == second.id and moved.status == NuggetStatus.ATTACHED
+    assert citation.task_id == second.id  # citation follows the nugget
+    assert [n.id for n in tasks.list_attached_nuggets(session, second.id)] == [item.id]
+    assert tasks.list_attached_nuggets(session, first.id) == []
+
+    detached = nuggets.detach_nugget(session, item.id)
+    assert detached.task_id is None and detached.status == NuggetStatus.NEW
+    assert detached.reviewed_at is None
+    assert tasks.find_link(session, "notes", f"swd/x.md:1:{item.id}") is None
+
+
+def test_detach_never_attached_is_safe(session: Session) -> None:
+    """Detach on a nugget without a citation link just returns it to NEW."""
+    item = _nugget(session, "plain")
+    detached = nuggets.detach_nugget(session, item.id)
+    assert detached.status == NuggetStatus.NEW and detached.task_id is None
+
+
+def test_edit_keeps_fingerprint(session: Session) -> None:
+    """Editing the summary must not change dedupe identity on the next scan upsert."""
+    item = _nugget(session, "original text")
+    nuggets.update_nugget(session, item.id, summary="rewritten text")
+    again, created = nuggets.upsert_nugget(
+        session, "swd/x.md", 5, "original text", NuggetKind.ACTION
+    )
+    assert not created and again.id == item.id
+
+
+def test_find_jira_keys() -> None:
+    assert nuggets.find_jira_keys("see DBOARD3-1111 and CHRN-222") == ["DBOARD3-1111", "CHRN-222"]
+    assert nuggets.find_jira_keys("no keys here", None) == []
+    assert nuggets.find_jira_keys("PROJ-1 PROJ-1") == ["PROJ-1"]
+
+
+# --- suggest_matches ---
+
+
+def _match_response(*pairs: tuple[int, int | None]) -> str:
+    return json.dumps({"matches": [{"item": item, "task": task} for item, task in pairs]})
+
+
+def test_suggest_deterministic_duplicate(session: Session) -> None:
+    """A repeated item inherits the task its twin was attached to — no LLM call."""
+    task = tasks.create_task(session, "the topic")
+    attached = _nugget(session, "fix the IX SLA report", path="a/one.md")
+    nuggets.attach_nugget(session, attached.id, task_id=task.id)
+    duplicate = _nugget(session, "Fix the IX SLA report!", path="b/two.md")  # same words
+    llm = FakeLLM()
+
+    summary = suggest_matches(session, llm)
+    assert summary.reviewed == 1 and summary.suggested == 1
+    assert llm.calls == []  # deterministic pass covered it
+    assert nuggets.get_nugget(session, duplicate.id).suggested_task_id == task.id
+    assert summary.as_text().startswith("reviewed=1 suggested=1")
+
+
+def test_suggest_llm_pass_and_no_match(session: Session) -> None:
+    topic = tasks.create_task(session, "deploy pipeline work")
+    a = _nugget(session, "redo the deploy pipeline", path="a.md", line=1)
+    b = _nugget(session, "buy birthday cake", path="b.md", line=2)
+    llm = FakeLLM(responses=[_match_response((a.id, topic.id), (b.id, None))])
+
+    summary = suggest_matches(session, llm)
+    assert summary.suggested == 1 and summary.no_match == 1
+    assert nuggets.get_nugget(session, a.id).suggested_task_id == topic.id
+    assert nuggets.get_nugget(session, b.id).suggested_task_id is None
+    assert llm.calls and llm.calls[0]["smart"] is False
+
+
+def test_suggest_ignores_hallucinated_ids_and_bad_json(session: Session) -> None:
+    topic = tasks.create_task(session, "real task")
+    a = _nugget(session, "something", path="a.md", line=1)
+    b = _nugget(session, "else", path="b.md", line=2)
+    llm = FakeLLM(
+        responses=[
+            "not json",
+            _match_response((a.id, 9999), (a.id, topic.id), (b.id, topic.id)),
+        ]
+    )
+    summary = suggest_matches(session, llm)
+    assert summary.errors == []  # retry succeeded
+    # unknown task id → treated as no-match; first match for an item wins
+    assert nuggets.get_nugget(session, a.id).suggested_task_id is None
+    assert nuggets.get_nugget(session, b.id).suggested_task_id == topic.id
+
+
+def test_suggest_records_chunk_errors(session: Session) -> None:
+    tasks.create_task(session, "a task")
+    _nugget(session, "unmatched", path="a.md", line=1)
+    llm = FakeLLM(responses=["garbage"])
+    summary = suggest_matches(session, llm)
+    assert summary.errors and "did not return valid matches" in summary.errors[0]
+    assert "errors=1" in summary.as_text()
+
+
+def test_suggest_fence_stripping_and_id_filter(session: Session) -> None:
+    topic = tasks.create_task(session, "the topic")
+    a = _nugget(session, "in scope", path="a.md", line=1)
+    b = _nugget(session, "out of scope", path="b.md", line=2)
+    llm = FakeLLM(responses=["```json\n" + _match_response((a.id, topic.id)) + "\n```"])
+    summary = suggest_matches(session, llm, nugget_ids=[a.id])
+    assert summary.reviewed == 1
+    assert nuggets.get_nugget(session, a.id).suggested_task_id == topic.id
+    assert nuggets.get_nugget(session, b.id).suggested_task_id is None
+
+
+def test_suggest_no_candidates(session: Session) -> None:
+    summary = suggest_matches(session, FakeLLM())
+    assert summary.reviewed == 0
+
+
+# --- task_organize ---
+
+
+def _propose_response(*proposals: dict[str, object]) -> str:
+    return json.dumps({"proposals": list(proposals)})
+
+
+def test_propose_organization_validates(session: Session) -> None:
+    survivor = tasks.create_task(session, "survivor")
+    loser = tasks.create_task(session, "loser")
+    item = _nugget(session, "attached bit")
+    nuggets.attach_nugget(session, item.id, task_id=loser.id)
+    loose_a = _nugget(session, "loose a", path="a.md", line=1)
+    loose_b = _nugget(session, "loose b", path="b.md", line=2)
+    llm = FakeLLM(
+        responses=[
+            _propose_response(
+                {"kind": "merge", "into_id": survivor.id, "from_id": loser.id, "reason": "same"},
+                {"kind": "merge", "into_id": survivor.id, "from_id": 9999},  # unknown
+                {"kind": "split", "task_id": loser.id, "nugget_ids": [item.id], "title": "half"},
+                # nugget not attached to the source task → dropped
+                {"kind": "split", "task_id": loser.id, "nugget_ids": [9999], "title": "bad"},
+                {
+                    "kind": "create",
+                    "nugget_ids": [loose_a.id, loose_b.id],
+                    "title": "cluster",
+                },
+                {"kind": "create", "nugget_ids": [loose_a.id], "title": "too few"},
+                {"kind": "retitle", "task_id": survivor.id, "title": "better"},
+            )
+        ]
+    )
+    proposals, tokens = task_organize.propose_organization(session, llm)
+    assert tokens == 10
+    assert [(p.kind, getattr(p, "title", None)) for p in proposals] == [
+        ("merge", None),
+        ("split", "half"),
+        ("create", "cluster"),
+        ("retitle", "better"),
+    ]
+    assert llm.calls[0]["smart"] is True
+
+
+def test_propose_organization_bad_json(session: Session) -> None:
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid proposals"):
+        task_organize.propose_organization(session, llm)
+
+
+def test_propose_organization_fence_and_more_drops(session: Session) -> None:
+    task = tasks.create_task(session, "task")
+    loose = _nugget(session, "loose", path="a.md", line=1)
+    llm = FakeLLM(
+        responses=[
+            "```json\n"
+            + _propose_response(
+                # merge a task into itself → dropped
+                {"kind": "merge", "into_id": task.id, "from_id": task.id},
+                # split an unknown task → dropped
+                {"kind": "split", "task_id": 9999, "nugget_ids": [loose.id], "title": "x"},
+                # create with a nugget that is not NEW → dropped
+                {"kind": "create", "nugget_ids": [9999, loose.id], "title": "x"},
+                # retitle without a title → dropped
+                {"kind": "retitle", "task_id": task.id},
+                {"kind": "retitle", "task_id": task.id, "title": "better"},
+            )
+            + "\n```"
+        ]
+    )
+    proposals, _ = task_organize.propose_organization(session, llm)
+    assert [(p.kind, p.title) for p in proposals] == [("retitle", "better")]
+
+
+def test_apply_merge(session: Session) -> None:
+    into = tasks.create_task(session, "into", tags=[])
+    loser = tasks.create_task(session, "loser")
+    child = tasks.create_task(session, "child", parent_id=loser.id)
+    item = _nugget(session, "a nugget", jira_keys=["PROJ-1"])
+    nuggets.attach_nugget(session, item.id, task_id=loser.id)
+    tasks.add_note(session, "a note", task_id=loser.id)
+    tasks.link_external(session, into.id, "jira", "PROJ-1")  # duplicate on survivor → dropped
+
+    merged = task_organize.apply_merge(session, into.id, loser.id)
+    assert merged.id == into.id
+    assert [n.task_id for n in merged.nuggets] == [into.id]
+    assert [n.task_id for n in merged.notes] == [into.id]
+    assert tasks.get_task(session, child.id).parent_id == into.id
+    # the citation moves with the nugget; the duplicate jira link is dropped
+    assert {(x.system, x.external_key) for x in merged.external_links} == {
+        ("jira", "PROJ-1"),
+        ("notes", f"swd/x.md:1:{item.id}"),
+    }
+    with pytest.raises(NotFoundError):
+        tasks.get_task(session, loser.id)
+
+    with pytest.raises(ValueError, match="into itself"):
+        task_organize.apply_merge(session, into.id, into.id)
+
+
+def test_apply_split(session: Session) -> None:
+    source = tasks.create_task(session, "mixed topic")
+    keep = _nugget(session, "keep here", path="a.md", line=1)
+    move = _nugget(session, "move away", path="b.md", line=2)
+    nuggets.attach_nugget(session, keep.id, task_id=source.id)
+    nuggets.attach_nugget(session, move.id, task_id=source.id)
+
+    new_task = task_organize.apply_split(session, source.id, [move.id], "separate thing")
+    assert new_task.title == "separate thing"
+    assert [n.id for n in tasks.list_attached_nuggets(session, new_task.id)] == [move.id]
+    assert [n.id for n in tasks.list_attached_nuggets(session, source.id)] == [keep.id]
+
+
+def test_apply_create(session: Session) -> None:
+    a = _nugget(session, "bit a", path="a.md", line=1)
+    b = _nugget(session, "bit b", path="b.md", line=2)
+    task = task_organize.apply_create(session, "cluster topic", [a.id, b.id])
+    assert task.title == "cluster topic"
+    assert sorted(n.id for n in tasks.list_attached_nuggets(session, task.id)) == [a.id, b.id]
+    assert nuggets.get_nugget(session, a.id).status == NuggetStatus.ATTACHED

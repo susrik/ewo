@@ -30,6 +30,14 @@
     <div class="card-body">
       <div class="flex flex-wrap items-center gap-2">
         <h2 class="card-title flex-1">Inbox <span class="badge badge-primary" id="inbox-count">{{ count }}</span></h2>
+        {% if llm_enabled %}
+        <form hx-post="/gui/inbox/suggest" hx-target="#inbox-list" hx-indicator="#suggest-spinner" class="flex gap-2 items-center">
+          <input type="hidden" name="status" value="{{ filters.status }}">
+          <input type="hidden" name="owner" value="{{ filters.owner }}">
+          <button class="btn btn-sm" type="submit" title="Recompute suggested tasks for new nuggets">Suggest tasks</button>
+          <span id="suggest-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
+        </form>
+        {% endif %}
         <form hx-get="/gui/inbox" hx-target="#inbox-list" hx-trigger="change" class="flex gap-2">
           <select class="select select-bordered select-sm" name="status">
             {% for s in item_statuses %}<option value="{{ s.value }}" {% if filters.status == s.value %}selected{% endif %}>{{ s.value }}</option>{% endfor %}
@@ -42,8 +50,9 @@
         </form>
       </div>
       <p class="text-sm opacity-70">
-        Items found in your notes. <b>Accept</b> creates a tracked task; <b>Dismiss</b> if it isn't actionable;
-        <b>Already done</b> if the note is stale — the note itself is never modified.
+        Nuggets (work items found in your notes), grouped by suggested task. <b>Attach</b> adds one to the
+        selected task (or a new one); <b>Dismiss</b> if it isn't actionable; <b>Already done</b> if the note
+        is stale — the note itself is never modified.
       </p>
       <div id="inbox-list">
         {% include "_inbox.html" %}

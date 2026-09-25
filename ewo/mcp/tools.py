@@ -83,20 +83,22 @@ class EwoApi:
         return dict(response.json())
 
     def list_inbox(self) -> list[dict[str, Any]]:
-        response = self._client.get("/api/note-items")
+        response = self._client.get("/api/nuggets")
         response.raise_for_status()
         return list(response.json())
 
-    def accept_inbox_item(self, item_id: int, priority: str = "normal") -> dict[str, Any]:
+    def attach_inbox_item(
+        self, item_id: int, task_id: int | None = None, priority: str = "normal"
+    ) -> dict[str, Any]:
         response = self._client.post(
-            f"/api/note-items/{item_id}/accept", json={"priority": priority}
+            f"/api/nuggets/{item_id}/attach", json={"task_id": task_id, "priority": priority}
         )
         response.raise_for_status()
         return dict(response.json())
 
     def resolve_inbox_item(self, item_id: int, already_done: bool) -> dict[str, Any]:
         action = "done" if already_done else "dismiss"
-        response = self._client.post(f"/api/note-items/{item_id}/{action}")
+        response = self._client.post(f"/api/nuggets/{item_id}/{action}")
         response.raise_for_status()
         return dict(response.json())
 
@@ -131,7 +133,8 @@ def register_tools(server: MCPServer[Any], api: EwoApi) -> None:
 
     @server.tool()
     def ewo_run_job(name: str, full: bool = False) -> dict[str, Any]:
-        """Run a named ewo job on demand (jira_sync, daily_report, what_next, notes_scan).
+        """Run a named ewo job on demand (jira_sync, daily_report, what_next, notes_scan,
+        nuggets_match).
 
         ``full=True`` makes notes_scan rescan the whole window instead of only changed notes.
         """
@@ -139,15 +142,18 @@ def register_tools(server: MCPServer[Any], api: EwoApi) -> None:
 
     @server.tool()
     def ewo_inbox_list() -> list[dict[str, Any]]:
-        """Unreviewed items found in notes (path:line cited), awaiting accept/dismiss/done."""
+        """Unreviewed nuggets found in notes (path:line cited), awaiting attach/dismiss/done."""
         return api.list_inbox()
 
     @server.tool()
-    def ewo_inbox_accept(item_id: int, priority: str = "normal") -> dict[str, Any]:
-        """Turn an inbox item into a tracked task (priority: critical|high|normal|low)."""
-        return api.accept_inbox_item(item_id, priority=priority)
+    def ewo_inbox_attach(
+        item_id: int, task_id: int | None = None, priority: str = "normal"
+    ) -> dict[str, Any]:
+        """Attach a nugget to an existing task (task_id) or create a new task from it
+        (priority: critical|high|normal|low, used only when creating)."""
+        return api.attach_inbox_item(item_id, task_id=task_id, priority=priority)
 
     @server.tool()
     def ewo_inbox_resolve(item_id: int, already_done: bool = False) -> dict[str, Any]:
-        """Dismiss an inbox item, or mark it already finished (already_done=True)."""
+        """Dismiss a nugget, or mark it already finished (already_done=True)."""
         return api.resolve_inbox_item(item_id, already_done=already_done)

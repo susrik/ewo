@@ -84,6 +84,22 @@ def test_sync_noop_update_not_counted(session: Session) -> None:
     assert counts == {"created": 0, "updated": 0}
 
 
+def test_sync_updates_all_tasks_linked_to_one_issue(session: Session) -> None:
+    """Several tasks may track the same Jira issue; sync updates them all."""
+    client = FakeJiraClient([_issue()])
+    sync_jira(session, client, "jql")
+    second = tasks.create_task(session, "manual task on the same issue")
+    tasks.link_external(session, second.id, "jira", "PROJ-1")
+
+    client.issues = [_issue(status="Done", status_category="done")]
+    counts = sync_jira(session, client, "jql")
+    assert counts == {"created": 0, "updated": 2}
+
+    all_tasks = tasks.list_tasks(session, include_closed=True)
+    assert {t.status for t in all_tasks} == {TaskStatus.DONE}
+    assert {t.external_links[0].external_status for t in all_tasks} == {"Done"}
+
+
 def test_sync_reopens_done_task(session: Session) -> None:
     client = FakeJiraClient([_issue(status="Done", status_category="done")])
     sync_jira(session, client, "jql")

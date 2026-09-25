@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ewo.config import JiraConfig
-from ewo.core.tasks import create_task, find_link
+from ewo.core.tasks import create_task, find_links
 from ewo.db.models import ExternalLink, Person, TaskSource, TaskStatus
 
 _DONE_STATUS_CATEGORY = "done"
@@ -91,16 +91,20 @@ def _map_status(category: str, current: TaskStatus) -> TaskStatus:
 
 
 def sync_jira(session: Session, client: JiraClient, jql: str) -> dict[str, int]:
-    """Sync Jira issues into tasks. Returns counters for the job log."""
+    """Sync Jira issues into tasks. Returns counters for the job log.
+
+    An issue with no links spawns a task; issues linked from several tasks
+    update every linked task.
+    """
     created = 0
     updated = 0
     people = list(session.scalars(select(Person).where(Person.jira_account_id.is_not(None))))
     by_account = {p.jira_account_id: p for p in people}
 
     for issue in client.search(jql):
-        link = find_link(session, "jira", issue.key)
+        links = find_links(session, "jira", issue.key)
         now = datetime.now(UTC).replace(tzinfo=None)
-        if link is None:
+        if not links:
             task = create_task(
                 session,
                 title=f"[{issue.key}] {issue.summary}",
@@ -123,15 +127,16 @@ def sync_jira(session: Session, client: JiraClient, jql: str) -> dict[str, int]:
             )
             created += 1
         else:
-            task = link.task
-            new_status = _map_status(issue.status_category, task.status)
-            changed = link.external_status != issue.status or task.status != new_status
-            link.external_status = issue.status
-            link.last_synced_at = now
-            task.status = new_status
-            if issue.assignee_account_id in by_account:
-                task.assignee_id = by_account[issue.assignee_account_id].id
-            if changed:
-                updated += 1
+            for link in links:
+                task = link.task
+                new_status = _map_status(issue.status_category, task.status)
+                changed = link.external_status != issue.status or task.status != new_status
+                link.external_status = issue.status
+                link.last_synced_at = now
+                task.status = new_status
+                if issue.assignee_account_id in by_account:
+                    task.assignee_id = by_account[issue.assignee_account_id].id
+                if changed:
+                    updated += 1
     session.commit()
     return {"created": created, "updated": updated}
