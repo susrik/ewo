@@ -339,13 +339,30 @@ def jobs_list(config: Config) -> None:
     default=600,
     help="Seconds to wait for the job (full scans are slow).",
 )
+@click.option(
+    "--no-wait",
+    is_flag=True,
+    default=False,
+    help="Start the job in the background; watch with 'ewo jobs runs'.",
+)
 @config_option
-def jobs_run(name: str, full: bool, timeout: float, config: Config) -> None:
+def jobs_run(name: str, full: bool, timeout: float, no_wait: bool, config: Config) -> None:
     """Run a job on demand."""
     with _client(config, timeout=timeout) as client:
-        response = client.post(f"/api/jobs/{name}/run", params={"full": str(full).lower()})
-        response.raise_for_status()
-        _echo_json(response.json())
+        try:
+            response = client.post(
+                f"/api/jobs/{name}/run",
+                params={"full": str(full).lower(), "wait": str(not no_wait).lower()},
+            )
+            response.raise_for_status()
+        except httpx.TimeoutException:
+            click.echo(f"job '{name}' is still running server-side — watch with: ewo jobs runs")
+            return
+        run = response.json()
+        if no_wait:
+            click.echo(f"started run #{run['id']} ({run['status']}) — watch with: ewo jobs runs")
+        else:
+            _echo_json(run)
 
 
 @jobs.command("runs")

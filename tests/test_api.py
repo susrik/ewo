@@ -326,3 +326,23 @@ def test_reports_endpoints(client: TestClient) -> None:
     assert "# What next" in detail["body"]
 
     assert client.get("/api/reports/999").status_code == 404
+
+
+def test_run_job_no_wait(client: TestClient) -> None:
+    import time
+
+    response = client.post("/api/jobs/what_next/run", params={"wait": "false"})
+    assert response.status_code == 202
+    run_id = response.json()["id"]
+
+    deadline = time.time() + 5
+    status = ""
+    while time.time() < deadline:
+        [run] = [r for r in client.get("/api/jobs/runs").json() if r["id"] == run_id]
+        status = run["status"]
+        if status != "running":
+            break
+        time.sleep(0.05)
+    assert status == "success"
+
+    assert client.post("/api/jobs/nope/run", params={"wait": "false"}).status_code == 404

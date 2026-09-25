@@ -1,21 +1,25 @@
 """Job registry: every execution (scheduled or on-demand) records a JobRun.
 
 Jobs are plain callables ``(JobContext) -> str | None`` registered by name.
-On-demand execution: ``POST /api/jobs/{name}/run`` or ``ewo jobs run <name>``.
+On-demand execution: ``POST /api/jobs/{name}/run`` or ``ewo jobs run <name>``
+— synchronously by default, in a background daemon thread with
+``wait=false`` / ``--no-wait`` for long jobs.
 """
 
 from __future__ import annotations
 
+import threading
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
 from ewo.core.llm import LLMClient
-from ewo.db.models import JobRun, JobRunStatus
+from ewo.db.models import JobRun, JobRunStatus, utcnow
 
 
 @dataclass
@@ -62,13 +66,16 @@ class JobRegistry:
         config: Config,
         llm: LLMClient,
         params: dict[str, str] | None = None,
+        job_run_id: int | None = None,
     ) -> JobRun:
         if name not in self.jobs:
             raise UnknownJobError(f"unknown job: {name}")
         with session_factory() as session:
-            job_run = JobRun(job_name=name)
-            session.add(job_run)
-            session.commit()
+            job_run = session.get(JobRun, job_run_id) if job_run_id is not None else None
+            if job_run is None:
+                job_run = JobRun(job_name=name)
+                session.add(job_run)
+                session.commit()
             context = JobContext(
                 session=session, config=config, llm=llm, job_run=job_run, params=params or {}
             )
@@ -82,5 +89,43 @@ class JobRegistry:
             session.commit()
             return job_run
 
+    def run_async(
+        self,
+        name: str,
+        session_factory: sessionmaker[Session],
+        config: Config,
+        llm: LLMClient,
+        params: dict[str, str] | None = None,
+    ) -> int:
+        """Create the JobRun and execute in a daemon thread; returns the run id."""
+        if name not in self.jobs:
+            raise UnknownJobError(f"unknown job: {name}")
+        with session_factory() as session:
+            job_run = JobRun(job_name=name)
+            session.add(job_run)
+            session.commit()
+            run_id = job_run.id
+        threading.Thread(
+            target=self.run,
+            args=(name, session_factory, config, llm),
+            kwargs={"params": params, "job_run_id": run_id},
+            daemon=True,
+        ).start()
+        return run_id
+
 
 registry = JobRegistry()
+
+
+def mark_interrupted_runs(session: Session) -> int:
+    """Fail JobRuns left 'running' by a dead process (they never update again).
+
+    Called once at server startup; returns the number of runs marked.
+    """
+    stale = list(session.scalars(select(JobRun).where(JobRun.status == JobRunStatus.RUNNING)))
+    for run in stale:
+        run.status = JobRunStatus.FAILED
+        run.error = "interrupted: server restarted"
+        run.finished_at = utcnow()
+    session.commit()
+    return len(stale)

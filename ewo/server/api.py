@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -321,16 +321,24 @@ def list_jobs(registry: Annotated[JobRegistry, Depends(get_registry)]) -> object
 @router.post("/jobs/{name}/run", response_model=schemas.JobRunOut)
 def run_job(
     name: str,
+    response: Response,
     registry: Annotated[JobRegistry, Depends(get_registry)],
     session_factory: Annotated[sessionmaker[Session], Depends(get_session_factory)],
     config: Annotated[Config, Depends(get_config)],
     llm: Annotated[LLMClient, Depends(get_llm)],
+    session: SessionDep,
     full: bool = False,
+    wait: bool = True,
 ) -> object:
+    """Run a job — synchronously by default, in the background with wait=false."""
     try:
-        return registry.run(name, session_factory, config, llm, params={"full": str(full)})
+        if wait:
+            return registry.run(name, session_factory, config, llm, params={"full": str(full)})
+        run_id = registry.run_async(name, session_factory, config, llm, params={"full": str(full)})
     except UnknownJobError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    response.status_code = 202
+    return session.get(JobRun, run_id)
 
 
 @router.get("/jobs/runs", response_model=list[schemas.JobRunOut])

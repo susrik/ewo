@@ -12,7 +12,7 @@ from ewo.config import Config, load_config
 from ewo.core.llm import LLMClient, OpenAILLM
 from ewo.db.session import make_engine, make_session_factory
 from ewo.jobs import builtin  # noqa: F401  (registers built-in jobs)
-from ewo.jobs.registry import registry
+from ewo.jobs.registry import mark_interrupted_runs, registry
 from ewo.jobs.scheduler import build_scheduler
 from ewo.server.api import router as api_router
 from ewo.server.gui import router as gui_router
@@ -21,6 +21,8 @@ from ewo.server.gui import router as gui_router
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: Config = app.state.config
+    with app.state.session_factory() as session:
+        mark_interrupted_runs(session)
     scheduler = build_scheduler(config, registry, app.state.session_factory, app.state.llm)
     scheduler.start()
     app.state.scheduler = scheduler

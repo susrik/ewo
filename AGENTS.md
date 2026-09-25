@@ -57,6 +57,9 @@ rationale.
   (scheduled or on-demand) records a `JobRun` row (its return string goes in
   `JobRun.result`). On-demand: `POST /api/jobs/{name}/run[?full=true]` /
   `ewo jobs run <name> [--full]`; per-run params arrive via `JobContext.params`.
+  Long jobs: `wait=false` (API) / `--no-wait` (CLI) runs the job in a daemon
+  thread and returns 202 with the run id. Runs left `running` by a dead
+  process are failed at startup (`mark_interrupted_runs` in the lifespan).
 - Notes pipeline: `core/notes.py` (reader) → `core/note_extract.py` (LLM
   extraction, `notes_scan` job) → `Nugget` inbox (`core/nuggets.py`) →
   attach (`nuggets.attach_nugget`) links the nugget to a task — an existing

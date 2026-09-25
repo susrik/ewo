@@ -47,7 +47,7 @@ Loaded from `ewo.json` or `$EWO_CONFIG_FILENAME`; every CLI command accepts
 | `google` | OAuth client for the dedicated account (gcal read + gmail send) |
 | `discord` | bot token + channel restriction |
 | `reports_repo` | dedicated GitHub repo for markdown reports |
-| `jobs.schedules` | job name → 5-field cron expression ("" disables) |
+| `jobs.schedules` | job name → 5-field cron expression ("" disables). On-demand: `ewo jobs run <name>`; long jobs (e.g. a full `notes_scan`) run best in the background: `ewo jobs run <name> --no-wait`, then watch `ewo jobs runs` |
 | `mcp` | HTTP transport toggle + port |
 | `notes` | read-only markdown notes tree: `root`, `people_dir`, `exclude`, `window_days`, `max_file_chars` |
 | `api_base_url` | where CLI/listeners/MCP find the server |

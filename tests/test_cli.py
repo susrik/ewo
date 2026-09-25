@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 import respx
 from click.testing import CliRunner
@@ -225,6 +226,14 @@ def test_jobs_commands(config_file: str) -> None:
     result = _invoke(["jobs", "run", "notes_scan", "--full"], config_file)
     assert "success" in result.output  # type: ignore[attr-defined]
     assert "full=true" in str(run_route.calls[0].request.url)
+    assert "wait=true" in str(run_route.calls[0].request.url)
+
+    respx.post(f"{BASE}/api/jobs/notes_scan/run").mock(
+        return_value=Response(202, json={"id": 9, "job_name": "notes_scan", "status": "running"})
+    )
+    result = _invoke(["jobs", "run", "notes_scan", "--full", "--no-wait"], config_file)
+    assert "started run #9 (running)" in result.output  # type: ignore[attr-defined]
+    assert "wait=false" in str(run_route.calls[1].request.url)
 
     respx.get(f"{BASE}/api/jobs/runs").mock(
         return_value=Response(
@@ -244,6 +253,15 @@ def test_jobs_commands(config_file: str) -> None:
     result = _invoke(["jobs", "runs"], config_file)
     assert "#1 jira_sync success" in result.output  # type: ignore[attr-defined]
     assert "files=3 new=2" in result.output  # type: ignore[attr-defined]
+
+
+@respx.mock
+def test_jobs_run_timeout_is_friendly(config_file: str) -> None:
+    respx.post(f"{BASE}/api/jobs/notes_scan/run").mock(side_effect=httpx.ReadTimeout("timed out"))
+    result = _invoke(["jobs", "run", "notes_scan"], config_file)
+    assert result.exit_code == 0  # type: ignore[attr-defined]
+    assert "still running server-side" in result.output  # type: ignore[attr-defined]
+    assert "Traceback" not in result.output  # type: ignore[attr-defined]
 
 
 def test_google_auth(config_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
