@@ -15,8 +15,8 @@ import httpx
 from ewo.config import Config, config_option
 
 
-def _client(config: Config) -> httpx.Client:
-    return httpx.Client(base_url=config.api_base_url, timeout=60)
+def _client(config: Config, timeout: float = 60) -> httpx.Client:
+    return httpx.Client(base_url=config.api_base_url, timeout=timeout)
 
 
 def _echo_json(data: Any) -> None:
@@ -333,10 +333,16 @@ def jobs_list(config: Config) -> None:
 @jobs.command("run")
 @click.argument("name")
 @click.option("--full", is_flag=True, default=False, help="notes_scan: rescan the whole window.")
+@click.option(
+    "--timeout",
+    type=float,
+    default=600,
+    help="Seconds to wait for the job (full scans are slow).",
+)
 @config_option
-def jobs_run(name: str, full: bool, config: Config) -> None:
+def jobs_run(name: str, full: bool, timeout: float, config: Config) -> None:
     """Run a job on demand."""
-    with _client(config) as client:
+    with _client(config, timeout=timeout) as client:
         response = client.post(f"/api/jobs/{name}/run", params={"full": str(full).lower()})
         response.raise_for_status()
         _echo_json(response.json())

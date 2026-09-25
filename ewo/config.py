@@ -37,12 +37,18 @@ class DatabaseConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """Any OpenAI-protocol-compliant endpoint."""
+    """Any OpenAI-protocol-compliant endpoint.
+
+    ``request_timeout`` caps a single completion attempt (seconds). Make sure
+    any proxy in front (e.g. litellm ``request_timeout``) allows at least this
+    long — slow reasoning models need it for note extraction.
+    """
 
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     model: str = "gpt-4o-mini"
     smart_model: str = "gpt-4o"
+    request_timeout: int = 240
 
 
 class JiraConfig(BaseModel):

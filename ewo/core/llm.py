@@ -43,6 +43,7 @@ class OpenAILLM:
             base_url=self._config.base_url,
             api_key=self._config.api_key,
             http_client=self._http_client,
+            timeout=self._config.request_timeout,
         )
         messages: list[dict[str, str]] = []
         if system is not None:

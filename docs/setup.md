@@ -42,7 +42,7 @@ Loaded from `ewo.json` or `$EWO_CONFIG_FILENAME`; every CLI command accepts
 | `server` | listen host/port |
 | `storage` | `data_dir` root for all mutable files (+ optional `reports_clone_dir`, `tmp_dir`) |
 | `database` | SQLAlchemy URL (postgres in docker, sqlite works for dev) |
-| `llm` | OpenAI-protocol endpoint, key, cheap + smart model names. LLM report narrative is skipped when `api_key` is empty |
+| `llm` | OpenAI-protocol endpoint, key, cheap + smart model names, `request_timeout` (seconds per completion attempt; default 240). LLM report narrative is skipped when `api_key` is empty |
 | `jira` | read-only sync: base_url, email, api_token, JQL |
 | `google` | OAuth client for the dedicated account (gcal read + gmail send) |
 | `discord` | bot token + channel restriction |
@@ -56,7 +56,11 @@ Loaded from `ewo.json` or `$EWO_CONFIG_FILENAME`; every CLI command accepts
 
 ewo can read a tree of markdown notes (never writes to it) and pull the
 outstanding work out of it. Set `notes.enabled: true` and `notes.root`, and
-make sure `llm.api_key` is set (extraction uses the `smart_model`).
+make sure `llm.api_key` is set (extraction uses the `smart_model`). Note:
+extraction prompts are long and reasoning models can take minutes per note —
+any proxy in front of the model (e.g. litellm's `request_timeout`, 60s by
+default) must allow at least `llm.request_timeout` seconds per call, or scans
+will stall on 408 retries.
 
 1. **People.** Each team member has a folder `<people_dir>/<name>/` in the
    notes (the `AGENTS.md` inside describes them). `ewo person seed` (or the

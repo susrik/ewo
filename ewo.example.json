@@ -1,13 +1,21 @@
 {
-  "server": { "host": "0.0.0.0", "port": 8000 },
-  "storage": { "data_dir": "/data" },
-  "database": { "url": "postgresql+psycopg://ewo:ewo@db:5432/ewo" },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "storage": {
+    "data_dir": "/data"
+  },
+  "database": {
+    "url": "postgresql+psycopg://ewo:ewo@db:5432/ewo"
+  },
   "api_base_url": "http://localhost:8000",
   "llm": {
     "base_url": "https://api.openai.com/v1",
     "api_key": "sk-...",
     "model": "gpt-4o-mini",
-    "smart_model": "gpt-4o"
+    "smart_model": "gpt-4o",
+    "request_timeout": 240
   },
   "jira": {
     "enabled": false,
@@ -43,12 +51,18 @@
       "notes_scan": "0 6 * * 1-5"
     }
   },
-  "mcp": { "http_enabled": false, "http_port": 8765 },
+  "mcp": {
+    "http_enabled": false,
+    "http_port": 8765
+  },
   "notes": {
     "enabled": false,
     "root": "~/notes/work",
     "people_dir": "swd/people",
-    "exclude": ["swd/people/former", "overviews"],
+    "exclude": [
+      "swd/people/former",
+      "overviews"
+    ],
     "window_days": 60,
     "max_file_chars": 40000
   }
