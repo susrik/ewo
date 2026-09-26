@@ -1,0 +1,47 @@
+{% if error %}
+<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ error }}</span></div>
+{% elif not proposals %}
+<p class="opacity-60 text-sm mt-2">No organization suggestions right now.</p>
+{% else %}
+<div class="grid gap-2 mt-2">
+  {% for p in proposals %}
+  <div class="border rounded p-3 flex flex-wrap items-center gap-2 proposal">
+    <span class="badge badge-sm {% if p.kind == 'merge' %}badge-warning{% elif p.kind == 'split' %}badge-info{% elif p.kind == 'create' %}badge-success{% else %}badge-ghost{% endif %}">{{ p.kind }}</span>
+    <span class="flex-1 text-sm">
+      {% if p.kind == 'merge' %}Merge #{{ p.from_id }} into #{{ p.into_id }}
+      {% elif p.kind == 'split' %}Split {{ p.nugget_ids | length }} nugget(s) off #{{ p.task_id }} into “{{ p.title }}”
+      {% elif p.kind == 'create' %}Create “{{ p.title }}” from {{ p.nugget_ids | length }} nugget(s)
+      {% else %}Retitle #{{ p.task_id }} to “{{ p.title }}”{% endif %}
+      {% if p.reason %}<span class="opacity-60">— {{ p.reason }}</span>{% endif %}
+    </span>
+    {% if p.kind == 'merge' %}
+    <form hx-post="/gui/tasks/organize/merge" hx-target="#task-list" class="inline">
+      <input type="hidden" name="into_id" value="{{ p.into_id }}">
+      <input type="hidden" name="from_id" value="{{ p.from_id }}">
+      <button class="btn btn-xs btn-primary" type="submit">Apply</button>
+    </form>
+    {% elif p.kind == 'split' %}
+    <form hx-post="/gui/tasks/organize/split" hx-target="#task-list" class="inline">
+      <input type="hidden" name="task_id" value="{{ p.task_id }}">
+      <input type="hidden" name="title" value="{{ p.title }}">
+      <input type="hidden" name="nugget_ids" value="{{ p.nugget_ids | join(',') }}">
+      <button class="btn btn-xs btn-primary" type="submit">Apply</button>
+    </form>
+    {% elif p.kind == 'create' %}
+    <form hx-post="/gui/tasks/organize/create" hx-target="#task-list" class="inline">
+      <input type="hidden" name="title" value="{{ p.title }}">
+      <input type="hidden" name="nugget_ids" value="{{ p.nugget_ids | join(',') }}">
+      <button class="btn btn-xs btn-primary" type="submit">Apply</button>
+    </form>
+    {% else %}
+    <form hx-post="/gui/tasks/organize/retitle" hx-target="#task-list" class="inline">
+      <input type="hidden" name="task_id" value="{{ p.task_id }}">
+      <input type="hidden" name="title" value="{{ p.title }}">
+      <button class="btn btn-xs btn-primary" type="submit">Apply</button>
+    </form>
+    {% endif %}
+    <button class="btn btn-xs btn-ghost" type="button" onclick="this.closest('.proposal').remove()">Dismiss</button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

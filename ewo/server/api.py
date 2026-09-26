@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
-from ewo.core import note_items, one_on_ones, people, reports, tasks, whatnext
+from ewo.core import nuggets, one_on_ones, people, reports, tasks, whatnext
 from ewo.core.llm import LLMClient
 from ewo.core.notes import NotesReader
 from ewo.core.people import NotFoundError
-from ewo.db.models import JobRun, NoteItemStatus, Report, TaskStatus
+from ewo.db.models import JobRun, NuggetStatus, Report, TaskStatus
 from ewo.jobs.registry import JobRegistry, UnknownJobError
 from ewo.server import schemas
 from ewo.server.deps import get_config, get_llm, get_registry, get_session, get_session_factory
@@ -77,7 +77,10 @@ def seed_people(session: SessionDep, config: Annotated[Config, Depends(get_confi
 
 @router.post("/tasks", response_model=schemas.TaskOut, status_code=201)
 def create_task(body: schemas.TaskCreate, session: SessionDep) -> object:
-    return tasks.create_task(session, **body.model_dump())
+    try:
+        return tasks.create_task(session, **body.model_dump())
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/tasks", response_model=list[schemas.TaskOut])
@@ -114,6 +117,8 @@ def update_task(task_id: int, body: schemas.TaskUpdate, session: SessionDep) -> 
         return tasks.update_task(session, task_id, tags=tags, **fields)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/tasks/{task_id}", response_model=schemas.MessageOut)
@@ -130,49 +135,104 @@ def add_note(body: schemas.NoteCreate, session: SessionDep) -> object:
     return tasks.add_note(session, **body.model_dump())
 
 
-# --- inbox: items discovered in notes ---
+# --- task external links / nuggets ---
 
 
-@router.get("/note-items", response_model=list[schemas.NoteItemOut])
-def list_note_items(
+@router.post("/tasks/{task_id}/links", response_model=schemas.TaskOut, status_code=201)
+def add_task_link(task_id: int, body: schemas.LinkCreate, session: SessionDep) -> object:
+    try:
+        tasks.get_task(session, task_id)
+        tasks.link_external(session, task_id, body.system, body.external_key, url=body.url)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return tasks.get_task(session, task_id)
+
+
+@router.delete("/tasks/{task_id}/links/{link_id}", response_model=schemas.MessageOut)
+def delete_task_link(task_id: int, link_id: int, session: SessionDep) -> object:
+    try:
+        tasks.unlink_external(session, task_id, link_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return schemas.MessageOut(detail="deleted")
+
+
+@router.get("/tasks/{task_id}/nuggets", response_model=list[schemas.NuggetOut])
+def list_task_nuggets(task_id: int, session: SessionDep) -> object:
+    try:
+        return tasks.list_attached_nuggets(session, task_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# --- inbox: nuggets discovered in notes ---
+
+
+@router.get("/nuggets", response_model=list[schemas.NuggetOut])
+def list_nuggets(
     session: SessionDep,
     status: str | None = "new",
     owner_id: int | None = None,
     path_prefix: str | None = None,
 ) -> object:
-    parsed = NoteItemStatus(status) if status else None
-    return note_items.list_items(session, status=parsed, owner_id=owner_id, path_prefix=path_prefix)
+    parsed = NuggetStatus(status) if status else None
+    return nuggets.list_nuggets(session, status=parsed, owner_id=owner_id, path_prefix=path_prefix)
 
 
-@router.patch("/note-items/{item_id}", response_model=schemas.NoteItemOut)
-def update_note_item(item_id: int, body: schemas.NoteItemUpdate, session: SessionDep) -> object:
+@router.patch("/nuggets/{nugget_id}", response_model=schemas.NuggetOut)
+def update_nugget(nugget_id: int, body: schemas.NuggetUpdate, session: SessionDep) -> object:
     try:
-        return note_items.update_item(session, item_id, **body.model_dump(exclude_unset=True))
+        return nuggets.update_nugget(session, nugget_id, **body.model_dump(exclude_unset=True))
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/note-items/{item_id}/accept", response_model=schemas.TaskOut, status_code=201)
-def accept_note_item(item_id: int, body: schemas.NoteItemAccept, session: SessionDep) -> object:
+@router.post("/nuggets/{nugget_id}/attach", response_model=schemas.TaskOut, status_code=201)
+def attach_nugget(
+    nugget_id: int,
+    body: schemas.NuggetAttach,
+    session: SessionDep,
+    config: Annotated[Config, Depends(get_config)],
+) -> object:
+    """Attach to an existing task (``task_id``) or create a new one from the nugget."""
     try:
-        return note_items.accept_item(session, item_id, **body.model_dump())
+        return nuggets.attach_nugget(
+            session, nugget_id, jira_base_url=config.jira.base_url or None, **body.model_dump()
+        )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/note-items/{item_id}/dismiss", response_model=schemas.NoteItemOut)
-def dismiss_note_item(item_id: int, session: SessionDep) -> object:
+@router.post("/nuggets/{nugget_id}/move", response_model=schemas.NuggetOut)
+def move_nugget(nugget_id: int, body: schemas.NuggetMove, session: SessionDep) -> object:
     try:
-        return note_items.set_item_status(session, item_id, NoteItemStatus.DISMISSED)
+        return nuggets.move_nugget(session, nugget_id, body.task_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/note-items/{item_id}/done", response_model=schemas.NoteItemOut)
-def note_item_already_done(item_id: int, session: SessionDep) -> object:
+@router.post("/nuggets/{nugget_id}/detach", response_model=schemas.NuggetOut)
+def detach_nugget(nugget_id: int, session: SessionDep) -> object:
+    """Remove from its task and return to the inbox."""
+    try:
+        return nuggets.detach_nugget(session, nugget_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/nuggets/{nugget_id}/dismiss", response_model=schemas.NuggetOut)
+def dismiss_nugget(nugget_id: int, session: SessionDep) -> object:
+    try:
+        return nuggets.set_nugget_status(session, nugget_id, NuggetStatus.DISMISSED)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/nuggets/{nugget_id}/done", response_model=schemas.NuggetOut)
+def nugget_already_done(nugget_id: int, session: SessionDep) -> object:
     """The note still lists it, but it is finished — record that without editing the note."""
     try:
-        return note_items.set_item_status(session, item_id, NoteItemStatus.ALREADY_DONE)
+        return nuggets.set_nugget_status(session, nugget_id, NuggetStatus.ALREADY_DONE)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -261,16 +321,24 @@ def list_jobs(registry: Annotated[JobRegistry, Depends(get_registry)]) -> object
 @router.post("/jobs/{name}/run", response_model=schemas.JobRunOut)
 def run_job(
     name: str,
+    response: Response,
     registry: Annotated[JobRegistry, Depends(get_registry)],
     session_factory: Annotated[sessionmaker[Session], Depends(get_session_factory)],
     config: Annotated[Config, Depends(get_config)],
     llm: Annotated[LLMClient, Depends(get_llm)],
+    session: SessionDep,
     full: bool = False,
+    wait: bool = True,
 ) -> object:
+    """Run a job — synchronously by default, in the background with wait=false."""
     try:
-        return registry.run(name, session_factory, config, llm, params={"full": str(full)})
+        if wait:
+            return registry.run(name, session_factory, config, llm, params={"full": str(full)})
+        run_id = registry.run_async(name, session_factory, config, llm, params={"full": str(full)})
     except UnknownJobError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    response.status_code = 202
+    return session.get(JobRun, run_id)
 
 
 @router.get("/jobs/runs", response_model=list[schemas.JobRunOut])

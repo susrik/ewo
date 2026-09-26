@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ewo.core import people, tasks
@@ -105,6 +106,56 @@ def test_task_crud_with_tags(session: Session) -> None:
         tasks.get_task(session, task.id)
 
 
+def test_task_dates_and_completion(session: Session) -> None:
+    task = tasks.create_task(session, "dated", start_date=date(2026, 9, 20))
+    assert task.start_date == date(2026, 9, 20)
+    assert task.completed_at is None
+
+    done = tasks.update_task(session, task.id, status=TaskStatus.DONE)
+    assert done.completed_at is not None
+    # staying done does not move the timestamp
+    again = tasks.update_task(session, task.id, title="dated 2")
+    assert again.completed_at == done.completed_at
+    # reopening clears it; dropped does not count as completed
+    reopened = tasks.update_task(session, task.id, status=TaskStatus.OPEN)
+    assert reopened.completed_at is None
+    dropped = tasks.update_task(session, task.id, status=TaskStatus.DROPPED)
+    assert dropped.completed_at is None
+
+
+def test_task_hierarchy(session: Session) -> None:
+    epic = tasks.create_task(session, "epic")
+    story = tasks.create_task(session, "story", parent_id=epic.id)
+    sub = tasks.create_task(session, "sub", parent_id=story.id)
+    assert [c.id for c in epic.children] == [story.id]
+    assert sub.parent.id == story.id
+
+    with pytest.raises(ValueError, match="own parent"):
+        tasks.update_task(session, epic.id, parent_id=epic.id)
+    with pytest.raises(ValueError, match="descendant"):
+        tasks.update_task(session, epic.id, parent_id=sub.id)
+    with pytest.raises(NotFoundError):
+        tasks.update_task(session, epic.id, parent_id=999)
+
+    # deleting a parent orphans the child (SET NULL), not deletes it
+    tasks.delete_task(session, story.id)
+    assert tasks.get_task(session, sub.id).parent_id is None
+
+
+def test_delete_task_returns_nuggets_to_inbox(session: Session) -> None:
+    from ewo.core import nuggets
+    from ewo.db.models import NuggetKind, NuggetStatus
+
+    task = tasks.create_task(session, "doomed")
+    item, _ = nuggets.upsert_nugget(session, "x.md", 1, "attached bit", NuggetKind.ACTION)
+    session.commit()
+    nuggets.attach_nugget(session, item.id, task_id=task.id)
+
+    tasks.delete_task(session, task.id)
+    nugget = nuggets.get_nugget(session, item.id)
+    assert nugget.status == NuggetStatus.NEW and nugget.task_id is None
+
+
 def test_list_tasks_filters(session: Session) -> None:
     anna = people.create_person(session, "Anna")
     open_task = tasks.create_task(session, "open one", assignee_id=anna.id, tags=["x"])
@@ -137,3 +188,16 @@ def test_notes_and_links(session: Session) -> None:
     assert link.external_key == "PROJ-1"
     assert tasks.find_link(session, "jira", "PROJ-1") is not None
     assert tasks.find_link(session, "jira", "PROJ-2") is None
+
+    # one issue on many tasks, but only once per task
+    other = tasks.create_task(session, "also linked")
+    tasks.link_external(session, other.id, "jira", "PROJ-1")
+    assert len(tasks.find_links(session, "jira", "PROJ-1")) == 2
+    with pytest.raises(IntegrityError):
+        tasks.link_external(session, task.id, "jira", "PROJ-1")
+    session.rollback()
+
+    tasks.unlink_external(session, task.id, link.id)
+    assert [link.task_id for link in tasks.find_links(session, "jira", "PROJ-1")] == [other.id]
+    with pytest.raises(NotFoundError):
+        tasks.unlink_external(session, task.id, link.id)

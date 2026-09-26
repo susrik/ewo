@@ -1,5 +1,7 @@
 <tr id="task-{{ task.id }}" class="{% if task.status.value in ['done', 'dropped'] %}opacity-50{% endif %}">
   <td>
+    {% set depth = depth | default(0) %}
+    {% if depth > 0 %}<span class="opacity-50" style="padding-left: {{ (depth - 1) * 1.25 }}rem">↳</span>{% endif %}
     <a class="link link-hover font-medium" hx-get="/gui/tasks/{{ task.id }}/detail" hx-target="#task-{{ task.id }}-detail" hx-swap="innerHTML" href="#">{{ task.title }}</a>
     {% for tag in task.tags %}<span class="badge badge-ghost badge-sm">{{ tag.name }}</span>{% endfor %}
     {% for link in task.external_links %}

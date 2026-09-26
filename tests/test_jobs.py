@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -12,9 +13,27 @@ import ewo.jobs.builtin  # noqa: F401 - registers builtins
 from ewo.config import Config
 from ewo.core import tasks
 from ewo.core.llm import FakeLLM
-from ewo.db.models import JobRunStatus, Report
-from ewo.jobs.registry import JobContext, JobRegistry, UnknownJobError, registry
+from ewo.db.models import JobRun, JobRunStatus, Report
+from ewo.jobs.registry import (
+    JobContext,
+    JobRegistry,
+    UnknownJobError,
+    mark_interrupted_runs,
+    registry,
+)
 from ewo.jobs.scheduler import build_scheduler
+
+
+def _wait_for_run(session_factory: sessionmaker[Session], run_id: int) -> JobRun:
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        with session_factory() as session:
+            run = session.get(JobRun, run_id)
+            assert run is not None
+            if run.status != JobRunStatus.RUNNING:
+                return run
+        time.sleep(0.05)
+    raise AssertionError(f"run {run_id} still running after 5s")
 
 
 def test_registry_run_success(
@@ -55,8 +74,59 @@ def test_registry_unknown_job(
         JobRegistry().run("nope", session_factory, config, fake_llm)
 
 
+def test_registry_run_async(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM
+) -> None:
+    reg = JobRegistry()
+
+    @reg.register("hello")
+    def hello(context: JobContext) -> str:
+        context.add_tokens(3)
+        return "hi async"
+
+    run_id = reg.run_async("hello", session_factory, config, fake_llm)
+    run = _wait_for_run(session_factory, run_id)
+    assert run.status == JobRunStatus.SUCCESS
+    assert run.result == "hi async" and run.tokens_used == 3
+
+
+def test_registry_run_async_unknown(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM
+) -> None:
+    with pytest.raises(UnknownJobError):
+        JobRegistry().run_async("nope", session_factory, config, fake_llm)
+
+
+def test_mark_interrupted_runs(session: Session) -> None:
+    session.add(JobRun(job_name="notes_scan", status=JobRunStatus.RUNNING))
+    session.add(JobRun(job_name="what_next", status=JobRunStatus.SUCCESS))
+    session.commit()
+
+    assert mark_interrupted_runs(session) == 1
+    stale = session.scalars(select(JobRun).where(JobRun.job_name == "notes_scan")).one()
+    assert stale.status == JobRunStatus.FAILED
+    assert stale.error == "interrupted: server restarted"
+    assert stale.finished_at is not None
+    done = session.scalars(select(JobRun).where(JobRun.job_name == "what_next")).one()
+    assert done.status == JobRunStatus.SUCCESS
+
+
 def test_builtin_jobs_registered() -> None:
-    assert {"jira_sync", "daily_report", "what_next"} <= set(registry.names())
+    assert {"jira_sync", "daily_report", "what_next", "notes_scan", "nuggets_match"} <= set(
+        registry.names()
+    )
+
+
+def test_nuggets_match_job(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM
+) -> None:
+    run = registry.run("nuggets_match", session_factory, config, fake_llm)
+    assert run.status == JobRunStatus.FAILED and "llm.api_key" in str(run.error)
+
+    config.llm.api_key = "sk"
+    run = registry.run("nuggets_match", session_factory, config, fake_llm)
+    assert run.status == JobRunStatus.SUCCESS
+    assert run.result is not None and run.result.startswith("reviewed=0")
 
 
 def test_what_next_job_uses_llm_when_key_configured(

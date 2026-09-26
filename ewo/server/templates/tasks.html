@@ -25,6 +25,11 @@
     <div class="card-body">
       <div class="flex flex-wrap items-center gap-2">
         <h2 class="card-title flex-1">Tasks</h2>
+        {% if llm_enabled %}
+        <button class="btn btn-sm" hx-post="/gui/tasks/organize" hx-target="#organize-result" hx-indicator="#organize-spinner" title="AI proposals: merge, split, create, retitle">
+          Organize (AI) <span id="organize-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
+        </button>
+        {% endif %}
         <form hx-get="/gui/tasks" hx-target="#task-list" hx-trigger="change" class="flex flex-wrap gap-2">
           <select class="select select-bordered select-sm" name="status">
             <option value="">any open status</option>
@@ -44,6 +49,7 @@
           </label>
         </form>
       </div>
+      <div id="organize-result"></div>
       <div id="task-list">
         {% include "_tasks.html" %}
       </div>

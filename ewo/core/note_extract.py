@@ -7,7 +7,7 @@ per-folder ``AGENTS.md`` chain is supplied as system context, together with the
 team roster and the disambiguation rules, so status-changing facts ("proposal
 submitted", "James L ≠ James S") are respected.
 
-Results land in the ``note_items`` inbox; the notes themselves are never modified.
+Results land in the ``nuggets`` inbox; the notes themselves are never modified.
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ewo.config import NotesConfig
-from ewo.core import note_items
+from ewo.core import nuggets
 from ewo.core.llm import LLMClient
 from ewo.core.notes import (
     NotesReader,
@@ -29,7 +29,7 @@ from ewo.core.notes import (
     numbered_lines,
 )
 from ewo.core.people import list_people, resolve_person
-from ewo.db.models import JobRun, JobRunStatus, NoteItemKind, Person
+from ewo.db.models import JobRun, JobRunStatus, NuggetKind, Person
 
 ROLLING_FILENAMES = frozenset({"old.md"})
 
@@ -48,18 +48,34 @@ Rules:
   written and do not guess.
 - Kinds: action (something to do), question (decision pending / open question),
   deadline (a hard future date), risk (concern or topic to review).
+- `jira`: Jira issue keys related to the item (e.g. DBOARD3-1111, CHRN-222) when the
+  note mentions one on or near the cited line; otherwise an empty list.
 - Merge duplicates within the note. Keep `summary` under 120 characters, imperative mood.
 - Respond with JSON only, matching: {"items": [{"summary": str, "line": int,
-  "kind": "action|question|deadline|risk", "owner": str|null, "due_date": "YYYY-MM-DD"|null}]}
+  "kind": "action|question|deadline|risk", "owner": str|null, "due_date": "YYYY-MM-DD"|null,
+  "jira": [str]}]}
 """
 
 
 class ExtractedItem(BaseModel):
     summary: str = Field(min_length=1)
     line: int = Field(ge=1)
-    kind: NoteItemKind = NoteItemKind.ACTION
+    kind: NuggetKind = NuggetKind.ACTION
     owner: str | None = None
     due_date: date | None = None
+    jira: list[str] = Field(default_factory=list)
+
+    @field_validator("jira", mode="before")
+    @classmethod
+    def _normalize_jira(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        keys: list[str] = []
+        for raw in value:
+            key = str(raw).strip().upper()
+            if nuggets.find_jira_keys(key) == [key] and key not in keys:
+                keys.append(key)
+        return keys
 
 
 class ExtractionResult(BaseModel):
@@ -174,16 +190,23 @@ def scan_notes(
         line_text = dict(lines)
         for extracted in result.items:
             owner = resolve_person(session, extracted.owner, note.path)
-            _, created = note_items.upsert_item(
+            excerpt = line_text.get(extracted.line)
+            jira_keys = list(
+                dict.fromkeys(
+                    [*extracted.jira, *nuggets.find_jira_keys(extracted.summary, excerpt)]
+                )
+            )
+            _, created = nuggets.upsert_nugget(
                 session,
                 path=note.path,
                 line=extracted.line,
                 summary=extracted.summary,
                 kind=extracted.kind,
-                excerpt=line_text.get(extracted.line),
+                excerpt=excerpt,
                 owner_id=owner.id if owner else None,
                 owner_name=extracted.owner,
                 due_date=extracted.due_date,
+                jira_keys=jira_keys,
                 job_run_id=job_run_id,
             )
             summary.created += created

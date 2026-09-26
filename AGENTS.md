@@ -34,8 +34,8 @@ rationale.
   derived dirs). This keeps Docker overlay writes at zero so
   `read_only: true` can eventually be enabled in docker-compose.yml.
 - The notes tree (`config.notes.root`) is **read-only** for ewo. `ewo/core/notes.py`
-  is the only module that touches it and it only reads. Marking a stale note
-  item "already done" is recorded in ewo, never written back to the note.
+  is the only module that touches it and it only reads. Marking a stale
+  nugget "already done" is recorded in ewo, never written back to the note.
 - `Person` rows are team members (plus one `is_self` row for the owner), not
   login accounts — no email, no auth.
 - No network access in tests. LLM calls use `FakeLLM`; HTTP-level tests use
@@ -57,12 +57,26 @@ rationale.
   (scheduled or on-demand) records a `JobRun` row (its return string goes in
   `JobRun.result`). On-demand: `POST /api/jobs/{name}/run[?full=true]` /
   `ewo jobs run <name> [--full]`; per-run params arrive via `JobContext.params`.
+  Long jobs: `wait=false` (API) / `--no-wait` (CLI) runs the job in a daemon
+  thread and returns 202 with the run id. Runs left `running` by a dead
+  process are failed at startup (`mark_interrupted_runs` in the lifespan).
 - Notes pipeline: `core/notes.py` (reader) → `core/note_extract.py` (LLM
-  extraction, `notes_scan` job) → `NoteItem` inbox (`core/note_items.py`) →
-  accept creates a `Task(source=notes)` with an `ExternalLink(system="notes",
-  external_key="<path>:<line>")`. Items dedupe on `fingerprint`; reviewed
-  items are never re-surfaced. People are attributed via `Person.notes_dir`
-  (folder wins) then `name`/`aliases` (`core/people.resolve_person`).
+  extraction, `notes_scan` job) → `Nugget` inbox (`core/nuggets.py`) →
+  attach (`nuggets.attach_nugget`) links the nugget to a task — an existing
+  one or a new `Task(source=notes)` — with an `ExternalLink(system="notes",
+  external_key="<path>:<line>:<nugget_id>")`. Nuggets dedupe on
+  `fingerprint`; reviewed nuggets are never re-surfaced. Jira keys mentioned
+  in notes are captured on the nugget (`jira_keys`) and become task links on
+  attach. People are attributed via `Person.notes_dir` (folder wins) then
+  `name`/`aliases` (`core/people.resolve_person`). The `nuggets_match` job
+  (`core/nugget_match.py`, also run at the end of `notes_scan`) stores a
+  suggested task per new nugget; the inbox groups by it. `core/task_organize.py`
+  computes stateless merge/split/create/retitle proposals behind the
+  tasks-page "Organize (AI)" button — nothing is persisted until confirmed.
+- Tasks form a single-parent tree of arbitrary depth (`Task.parent_id`, cycle
+  checks in `core/tasks.py`); `completed_at` is auto-managed on status→done.
+  One external key (e.g. a Jira issue) may be linked from many tasks; links
+  are unique per task (`uq_external_links_key_task`).
 - GUI: pages `/`, `/tasks`, `/inbox`, `/people`, `/jobs` extend
   `_layout.html`; fragments are `_*.html` and are what htmx swaps in. A
   mutation returns the fragment it belongs to (row, item, list).

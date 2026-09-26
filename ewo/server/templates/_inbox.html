@@ -1,9 +1,25 @@
-{% for path, items in groups.items() %}
+{% for group in groups %}
 <div class="mt-4">
-  <h3 class="font-mono text-sm opacity-70">{{ path }}</h3>
+  {% if group.kind == 'task' %}
+  <div class="flex flex-wrap items-center gap-2">
+    <h3 class="font-semibold text-sm">→ #{{ group.task.id }} {{ group.task.title }}</h3>
+    <form hx-post="/gui/inbox/attach-group" hx-target="#inbox-list" class="inline">
+      <input type="hidden" name="task_id" value="{{ group.task.id }}">
+      <input type="hidden" name="status" value="{{ filters.status }}">
+      <input type="hidden" name="owner" value="{{ filters.owner }}">
+      <button class="btn btn-xs btn-primary btn-outline" type="submit">
+        Attach all {{ group.nuggets | length }} to #{{ group.task.id }}
+      </button>
+    </form>
+  </div>
+  {% elif group.kind == 'new' %}
+  <h3 class="font-semibold text-sm opacity-70">No suggested task — attach by hand or create a new one</h3>
+  {% else %}
+  <h3 class="font-mono text-sm opacity-70">{{ group.path }}</h3>
+  {% endif %}
   <div class="grid gap-2 mt-1">
-    {% for item in items %}
-    {% include "_inbox_item.html" %}
+    {% for nugget in group.nuggets %}
+    {% include "_nugget.html" %}
     {% endfor %}
   </div>
 </div>

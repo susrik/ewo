@@ -1,10 +1,12 @@
 """Built-in jobs. Schedules come from ``config.jobs.schedules`` (cron syntax).
 
-- jira_sync:    pull configured JQL, create/update linked tasks
-- daily_report: generate daily markdown, publish to reports repo, email it
-- what_next:    generate a what-next report and publish it
-- notes_scan:   extract outstanding items from notes changed since the last
-                successful scan into the inbox (``full=true`` rescans the window)
+- jira_sync:     pull configured JQL, create/update linked tasks
+- daily_report:  generate daily markdown, publish to reports repo, email it
+- what_next:     generate a what-next report and publish it
+- notes_scan:    extract outstanding nuggets from notes changed since the last
+                 successful scan into the inbox (``full=true`` rescans the
+                 window), then suggest candidate tasks for the new nuggets
+- nuggets_match: (re)compute suggested tasks for unreviewed nuggets
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from datetime import UTC, datetime
 from ewo.core import reports
 from ewo.core.llm import LLMClient
 from ewo.core.note_extract import last_successful_scan, scan_notes
+from ewo.core.nugget_match import suggest_matches
 from ewo.core.report_publisher import publish_report
 from ewo.core.whatnext import what_next_markdown
 from ewo.integrations.google import HttpGoogleClient
@@ -85,4 +88,15 @@ def notes_scan(context: JobContext) -> str:
     context.add_tokens(summary.tokens)
     if summary.errors and summary.files == len(summary.errors):
         raise RuntimeError("; ".join(summary.errors))
+    match = suggest_matches(context.session, context.llm)
+    context.add_tokens(match.tokens)
+    return f"{summary.as_text()} | {match.as_text()}"
+
+
+@registry.register("nuggets_match")
+def nuggets_match(context: JobContext) -> str:
+    if not context.config.llm.api_key:
+        raise RuntimeError("nuggets_match needs llm.api_key")
+    summary = suggest_matches(context.session, context.llm)
+    context.add_tokens(summary.tokens)
     return summary.as_text()

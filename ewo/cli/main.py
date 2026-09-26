@@ -15,8 +15,8 @@ import httpx
 from ewo.config import Config, config_option
 
 
-def _client(config: Config) -> httpx.Client:
-    return httpx.Client(base_url=config.api_base_url, timeout=60)
+def _client(config: Config, timeout: float = 60) -> httpx.Client:
+    return httpx.Client(base_url=config.api_base_url, timeout=timeout)
 
 
 def _echo_json(data: Any) -> None:
@@ -39,15 +39,19 @@ def task() -> None:
 @task.command("add")
 @click.argument("title")
 @click.option("--assignee-id", type=int, default=None)
+@click.option("--parent-id", type=int, default=None, help="Make it a sub-task of this task.")
 @click.option("--priority", default="normal")
 @click.option("--tag", "tags", multiple=True)
+@click.option("--start", default=None, help="Start date YYYY-MM-DD")
 @click.option("--due", default=None, help="Due date YYYY-MM-DD")
 @config_option
 def task_add(
     title: str,
     assignee_id: int | None,
+    parent_id: int | None,
     priority: str,
     tags: tuple[str, ...],
+    start: str | None,
     due: str | None,
     config: Config,
 ) -> None:
@@ -58,8 +62,10 @@ def task_add(
             json={
                 "title": title,
                 "assignee_id": assignee_id,
+                "parent_id": parent_id,
                 "priority": priority,
                 "tags": list(tags),
+                "start_date": start,
                 "due_date": due,
             },
         )
@@ -169,67 +175,83 @@ def person_seed(config: Config) -> None:
 
 @cli.group()
 def inbox() -> None:
-    """Items discovered in notes, awaiting review."""
+    """Nuggets (work items discovered in notes), awaiting review."""
 
 
 @inbox.command("list")
-@click.option("--status", default="new", help="new|accepted|dismissed|already_done|all")
+@click.option("--status", default="new", help="new|attached|dismissed|already_done|all")
 @config_option
 def inbox_list(status: str, config: Config) -> None:
-    """List inbox items."""
+    """List inbox nuggets."""
     params = {} if status == "all" else {"status": status}
     with _client(config) as client:
-        response = client.get("/api/note-items", params=params)
+        response = client.get("/api/nuggets", params=params)
         response.raise_for_status()
         for item in response.json():
             owner = item["owner"]["name"] if item.get("owner") else (item.get("owner_name") or "-")
             due = f" due {item['due_date']}" if item.get("due_date") else ""
+            suggested = (
+                f" → task #{item['suggested_task_id']}" if item.get("suggested_task_id") else ""
+            )
+            jira = f" [{', '.join(item['jira_keys'])}]" if item.get("jira_keys") else ""
             click.echo(
-                f"#{item['id']} [{item['kind']}] {item['summary']} @{owner}{due}"
-                f"  ({item['path']}:{item['line']})"
+                f"#{item['id']} [{item['kind']}] {item['summary']} @{owner}{due}{jira}"
+                f"{suggested}  ({item['path']}:{item['line']})"
             )
 
 
-@inbox.command("accept")
+@inbox.command("attach")
 @click.argument("item_id", type=int)
+@click.option("--task-id", type=int, default=None, help="Attach to this existing task.")
 @click.option("--priority", default="normal")
 @click.option("--assignee-id", type=int, default=None)
 @click.option("--due", default=None, help="Due date YYYY-MM-DD")
 @config_option
-def inbox_accept(
-    item_id: int, priority: str, assignee_id: int | None, due: str | None, config: Config
+def inbox_attach(
+    item_id: int,
+    task_id: int | None,
+    priority: str,
+    assignee_id: int | None,
+    due: str | None,
+    config: Config,
 ) -> None:
-    """Turn an inbox item into a task."""
+    """Attach a nugget to a task (existing via --task-id, or a new one)."""
     with _client(config) as client:
         response = client.post(
-            f"/api/note-items/{item_id}/accept",
-            json={"priority": priority, "assignee_id": assignee_id, "due_date": due},
+            f"/api/nuggets/{item_id}/attach",
+            json={
+                "task_id": task_id,
+                "priority": priority,
+                "assignee_id": assignee_id,
+                "due_date": due,
+            },
         )
         response.raise_for_status()
         task = response.json()
-        click.echo(f"task #{task['id']} created: {task['title']}")
+        verb = "attached to" if task_id else "created"
+        click.echo(f"task #{task['id']} {verb}: {task['title']}")
 
 
 @inbox.command("dismiss")
 @click.argument("item_id", type=int)
 @config_option
 def inbox_dismiss(item_id: int, config: Config) -> None:
-    """Dismiss an inbox item (not actionable)."""
+    """Dismiss a nugget (not actionable)."""
     with _client(config) as client:
-        response = client.post(f"/api/note-items/{item_id}/dismiss")
+        response = client.post(f"/api/nuggets/{item_id}/dismiss")
         response.raise_for_status()
-        click.echo(f"item #{item_id} dismissed")
+        click.echo(f"nugget #{item_id} dismissed")
 
 
 @inbox.command("done")
 @click.argument("item_id", type=int)
 @config_option
 def inbox_done(item_id: int, config: Config) -> None:
-    """Mark an inbox item as already finished (the note is left untouched)."""
+    """Mark a nugget as already finished (the note is left untouched)."""
     with _client(config) as client:
-        response = client.post(f"/api/note-items/{item_id}/done")
+        response = client.post(f"/api/nuggets/{item_id}/done")
         response.raise_for_status()
-        click.echo(f"item #{item_id} marked already done")
+        click.echo(f"nugget #{item_id} marked already done")
 
 
 # --- one-on-ones ---
@@ -311,13 +333,36 @@ def jobs_list(config: Config) -> None:
 @jobs.command("run")
 @click.argument("name")
 @click.option("--full", is_flag=True, default=False, help="notes_scan: rescan the whole window.")
+@click.option(
+    "--timeout",
+    type=float,
+    default=600,
+    help="Seconds to wait for the job (full scans are slow).",
+)
+@click.option(
+    "--no-wait",
+    is_flag=True,
+    default=False,
+    help="Start the job in the background; watch with 'ewo jobs runs'.",
+)
 @config_option
-def jobs_run(name: str, full: bool, config: Config) -> None:
+def jobs_run(name: str, full: bool, timeout: float, no_wait: bool, config: Config) -> None:
     """Run a job on demand."""
-    with _client(config) as client:
-        response = client.post(f"/api/jobs/{name}/run", params={"full": str(full).lower()})
-        response.raise_for_status()
-        _echo_json(response.json())
+    with _client(config, timeout=timeout) as client:
+        try:
+            response = client.post(
+                f"/api/jobs/{name}/run",
+                params={"full": str(full).lower(), "wait": str(not no_wait).lower()},
+            )
+            response.raise_for_status()
+        except httpx.TimeoutException:
+            click.echo(f"job '{name}' is still running server-side — watch with: ewo jobs runs")
+            return
+        run = response.json()
+        if no_wait:
+            click.echo(f"started run #{run['id']} ({run['status']}) — watch with: ewo jobs runs")
+        else:
+            _echo_json(run)
 
 
 @jobs.command("runs")

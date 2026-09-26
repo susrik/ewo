@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from ewo.core.llm import LLMClient
 from ewo.core.people import get_self
 from ewo.core.tasks import list_tasks
-from ewo.db.models import NoteItem, Task, TaskPriority, TaskStatus
+from ewo.db.models import Nugget, Task, TaskPriority, TaskStatus
 
 _PRIORITY_SCORE = {
     TaskPriority.CRITICAL: 100,
@@ -105,7 +105,7 @@ def score_task(
 
 def _recent_note_mentions(session: Session) -> dict[int, datetime]:
     rows = session.execute(
-        select(NoteItem.task_id, NoteItem.last_seen_at).where(NoteItem.task_id.is_not(None))
+        select(Nugget.task_id, Nugget.last_seen_at).where(Nugget.task_id.is_not(None))
     )
     return {int(task_id): seen for task_id, seen in rows}
 

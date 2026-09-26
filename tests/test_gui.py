@@ -9,12 +9,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from ewo.config import NotesConfig
-from ewo.core import note_items
-from ewo.db.models import NoteItemKind
+from ewo.core import nuggets
+from ewo.db.models import NuggetKind
 
 
 def _item(session: Session, summary: str = "chase Matti", path: str = "eurohpc/x.md") -> int:
-    item, _ = note_items.upsert_item(session, path, 34, summary, NoteItemKind.ACTION, "- chase")
+    item, _ = nuggets.upsert_nugget(session, path, 34, summary, NuggetKind.ACTION, "- chase")
     session.commit()
     return item.id
 
@@ -130,6 +130,150 @@ def test_task_detail_and_notes(client: TestClient) -> None:
     assert blank.text.count("remember this") == 1
 
 
+def test_task_hierarchy_display_and_edit(client: TestClient) -> None:
+    parent = client.post("/api/tasks", json={"title": "epic"}).json()
+    client.post("/api/tasks", json={"title": "story", "parent_id": parent["id"]})
+
+    page = client.get("/tasks")
+    assert "↳" in page.text  # child indented under its parent
+
+    edit_form = client.get(f"/gui/tasks/{parent['id']}/edit")
+    assert 'name="parent_id"' in edit_form.text
+    # the parent select must not offer the task itself
+    assert f'value="{parent["id"]}"' not in edit_form.text
+
+    saved = client.post(
+        f"/gui/tasks/{parent['id']}",
+        data={
+            "title": "epic",
+            "priority": "normal",
+            "status": "open",
+            "start_date": "2026-09-20",
+        },
+    )
+    assert saved.status_code == 200
+    assert client.get(f"/api/tasks/{parent['id']}").json()["start_date"] == "2026-09-20"
+
+    # a closed current parent stays selectable in the child's edit form
+    client.patch(f"/api/tasks/{parent['id']}", json={"status": "done"})
+    [child] = [t for t in client.get("/api/tasks").json() if t["title"] == "story"]
+    child_edit = client.get(f"/gui/tasks/{child['id']}/edit")
+    assert f'value="{parent["id"]}"' in child_edit.text
+
+
+def test_task_detail_children_and_links(client: TestClient) -> None:
+    task = client.post("/api/tasks", json={"title": "parent"}).json()
+
+    response = client.post(f"/gui/tasks/{task['id']}/children", data={"title": "child one"})
+    assert "child one" in response.text
+    [child] = [t for t in client.get("/api/tasks").json() if t["title"] == "child one"]
+    assert child["parent_id"] == task["id"]
+
+    linked = client.post(f"/gui/tasks/{task['id']}/links", data={"jira_keys": "PROJ-1, PROJ-2"})
+    assert "jira:PROJ-1" in linked.text and "jira:PROJ-2" in linked.text
+    task_json = client.get(f"/api/tasks/{task['id']}").json()
+    assert {link["external_key"] for link in task_json["external_links"]} == {"PROJ-1", "PROJ-2"}
+
+    [link] = [x for x in task_json["external_links"] if x["external_key"] == "PROJ-1"]
+    unlinked = client.post(f"/gui/tasks/{task['id']}/links/{link['id']}/delete")
+    assert "jira:PROJ-1" not in unlinked.text
+
+
+def test_task_detail_nugget_management(client: TestClient, session: Session) -> None:
+    first = client.post("/api/tasks", json={"title": "first"}).json()
+    second = client.post("/api/tasks", json={"title": "second"}).json()
+    item_id = _item(session)
+    client.post(f"/api/nuggets/{item_id}/attach", json={"task_id": first["id"]})
+
+    detail = client.get(f"/gui/tasks/{first['id']}/detail")
+    assert "Nuggets (from notes)" in detail.text and "chase Matti" in detail.text
+    assert "eurohpc/x.md:34" in detail.text
+
+    # edit the nugget text in place
+    edited = client.post(
+        f"/gui/nuggets/{item_id}/edit",
+        data={"summary": "chase Matti harder", "kind": "risk", "due_date": "2026-11-01"},
+    )
+    assert "chase Matti harder" in edited.text
+    nugget = client.get("/api/nuggets", params={"status": "attached"}).json()[0]
+    assert nugget["summary"] == "chase Matti harder" and nugget["kind"] == "risk"
+    assert nugget["due_date"] == "2026-11-01"
+
+    # move to the second task (the panel re-renders the first task, now empty)
+    moved = client.post(f"/gui/nuggets/{item_id}/move", data={"task_id": str(second["id"])})
+    assert "chase Matti harder" not in moved.text
+    assert client.get(f"/api/tasks/{second['id']}/nuggets").json()[0]["id"] == item_id
+
+    # detach sends it back to the inbox
+    detached = client.post(f"/gui/nuggets/{item_id}/detach")
+    assert "chase Matti harder" not in detached.text
+    assert client.get("/api/nuggets").json()[0]["id"] == item_id  # status=new again
+
+
+def test_tasks_organize_flow(client: TestClient, session: Session) -> None:
+    # no llm key configured → the button is hidden, and the endpoint explains
+    assert "Organize (AI)" not in client.get("/tasks").text
+    response = client.post("/gui/tasks/organize")
+    assert "No LLM API key" in response.text
+
+    # with a key, proposals come from the (fake) LLM; applying re-renders the list
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+    first = client.post("/api/tasks", json={"title": "first"}).json()
+    second = client.post("/api/tasks", json={"title": "second"}).json()
+    from ewo.core.llm import FakeLLM
+
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            '{"proposals": [{"kind": "merge", '
+            f'"into_id": {first["id"]}, "from_id": {second["id"]}, "reason": "same"'
+            "}]}"
+        ]
+    )
+    proposals = client.post("/gui/tasks/organize")
+    assert f"Merge #{second['id']} into #{first['id']}" in proposals.text
+
+    applied = client.post(
+        "/gui/tasks/organize/merge",
+        data={"into_id": str(first["id"]), "from_id": str(second["id"])},
+    )
+    assert applied.status_code == 200
+    assert client.get(f"/api/tasks/{second['id']}").status_code == 404
+
+    # an LLM returning garbage surfaces as an inline error, not a 500
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    errored = client.post("/gui/tasks/organize")
+    assert "did not return valid proposals" in errored.text
+
+
+def test_tasks_organize_split_create_retitle(client: TestClient, session: Session) -> None:
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+    task = client.post("/api/tasks", json={"title": "mixed"}).json()
+    item_id = _item(session)
+    client.post(f"/api/nuggets/{item_id}/attach", json={"task_id": task["id"]})
+    loose = _item(session, "loose one", "ai/y.md")
+    loose2 = _item(session, "loose two", "ai/z.md")
+
+    split = client.post(
+        "/gui/tasks/organize/split",
+        data={"task_id": str(task["id"]), "title": "half", "nugget_ids": str(item_id)},
+    )
+    assert "half" in split.text
+    [attached] = client.get("/api/nuggets", params={"status": "attached"}).json()
+    assert attached["id"] == item_id and attached["task_id"] != task["id"]
+
+    created = client.post(
+        "/gui/tasks/organize/create",
+        data={"title": "cluster", "nugget_ids": f"{loose},{loose2}"},
+    )
+    assert "cluster" in created.text
+    assert client.get("/api/nuggets").json() == []  # both attached now
+
+    retitled = client.post(
+        "/gui/tasks/organize/retitle", data={"task_id": str(task["id"]), "title": "renamed"}
+    )
+    assert "renamed" in retitled.text
+
+
 # --- inbox ---
 
 
@@ -142,17 +286,18 @@ def test_inbox_page_and_actions(client: TestClient, session: Session) -> None:
     assert "chase Matti" in page.text and "eurohpc/x.md" in page.text
     assert "notes disabled in config" in page.text
     assert "Never scanned" in page.text
+    assert "No suggested task" in page.text  # nothing matched yet
 
-    accepted = client.post(
-        f"/gui/inbox/{item_id}/accept",
-        data={"priority": "high", "assignee_id": "", "due_date": "2026-10-01"},
+    attached = client.post(
+        f"/gui/nuggets/{item_id}/attach",
+        data={"task_id": "", "priority": "high", "assignee_id": "", "due_date": "2026-10-01"},
     )
-    assert "accepted" in accepted.text and "task #" in accepted.text
+    assert "attached" in attached.text and "task #" in attached.text
     task = client.get("/api/tasks").json()[0]
     assert task["title"] == "chase Matti" and task["priority"] == "high"
     assert task["external_links"][0]["external_key"] == f"eurohpc/x.md:34:{item_id}"
 
-    done = client.post(f"/gui/inbox/{other}/done")
+    done = client.post(f"/gui/nuggets/{other}/done")
     assert "already done" in done.text
 
     assert "Nothing to review" in client.get("/gui/inbox").text
@@ -160,10 +305,41 @@ def test_inbox_page_and_actions(client: TestClient, session: Session) -> None:
     assert "budget" in client.get("/gui/inbox", params={"status": "already_done"}).text
 
 
+def test_inbox_attach_to_existing_and_group(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "the topic"}).json()
+    item_id = _item(session)
+    other = _item(session, "budget", "ai/y.md")
+
+    # a suggestion groups the nugget under its task with a bulk button
+    nuggets.update_nugget(session, item_id, suggested_task_id=task["id"])
+    page = client.get("/inbox")
+    assert f"→ #{task['id']} the topic" in page.text
+    assert "Attach all 1 to #" in page.text
+
+    # single attach to the existing task via the picker
+    attached = client.post(f"/gui/nuggets/{item_id}/attach", data={"task_id": str(task["id"])})
+    assert "attached" in attached.text
+    assert client.get(f"/api/tasks/{task['id']}/nuggets").json()[0]["id"] == item_id
+
+    # bulk attach for the remaining group
+    nuggets.update_nugget(session, other, suggested_task_id=task["id"])
+    response = client.post("/gui/inbox/attach-group", data={"task_id": str(task["id"])})
+    assert "Nothing to review" in response.text
+    assert len(client.get(f"/api/tasks/{task['id']}/nuggets").json()) == 2
+
+
+def test_inbox_suggest_button(client: TestClient, session: Session) -> None:
+    _item(session)
+    # no llm key configured: the job fails but the inbox still re-renders
+    response = client.post("/gui/inbox/suggest", data={"status": "new", "owner": ""})
+    assert response.status_code == 200
+    assert "chase Matti" in response.text
+
+
 def test_inbox_dismiss_and_owner_filter(client: TestClient, session: Session) -> None:
     person = client.post("/api/people", json={"name": "Neda"}).json()
-    item, _ = note_items.upsert_item(
-        session, "swd/x.md", 3, "fix pipeline", NoteItemKind.ACTION, owner_id=person["id"]
+    item, _ = nuggets.upsert_nugget(
+        session, "swd/x.md", 3, "fix pipeline", NuggetKind.ACTION, owner_id=person["id"]
     )
     session.commit()
     _item(session, "unowned", "misc.md")
@@ -171,7 +347,7 @@ def test_inbox_dismiss_and_owner_filter(client: TestClient, session: Session) ->
     mine = client.get("/gui/inbox", params={"owner": str(person["id"])})
     assert "fix pipeline" in mine.text and "unowned" not in mine.text
 
-    dismissed = client.post(f"/gui/inbox/{item.id}/dismiss")
+    dismissed = client.post(f"/gui/nuggets/{item.id}/dismiss")
     assert "dismissed" in dismissed.text
 
 

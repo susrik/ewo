@@ -14,7 +14,12 @@
           <option value="">(unassigned)</option>
           {% for person in people %}<option value="{{ person.id }}" {% if task.assignee_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
         </select>
-        <input class="input input-bordered input-sm" type="date" name="due_date" value="{{ task.due_date.isoformat() if task.due_date else '' }}">
+        <select class="select select-bordered select-sm max-w-56" name="parent_id" title="Parent task">
+          <option value="">(no parent)</option>
+          {% for candidate in parent_candidates %}<option value="{{ candidate.id }}" {% if task.parent_id == candidate.id %}selected{% endif %}>#{{ candidate.id }} {{ candidate.title }}</option>{% endfor %}
+        </select>
+        <input class="input input-bordered input-sm" type="date" name="start_date" title="Start date" value="{{ task.start_date.isoformat() if task.start_date else '' }}">
+        <input class="input input-bordered input-sm" type="date" name="due_date" title="Due date" value="{{ task.due_date.isoformat() if task.due_date else '' }}">
         <input class="input input-bordered input-sm" name="tags" placeholder="tags" value="{{ task.tags | map(attribute='name') | join(', ') }}">
         <button class="btn btn-primary btn-sm" type="submit">Save</button>
         <button class="btn btn-sm" type="button" hx-get="/gui/tasks/{{ task.id }}" hx-target="#task-{{ task.id }}" hx-swap="outerHTML">Cancel</button>

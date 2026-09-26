@@ -42,12 +42,12 @@ Loaded from `ewo.json` or `$EWO_CONFIG_FILENAME`; every CLI command accepts
 | `server` | listen host/port |
 | `storage` | `data_dir` root for all mutable files (+ optional `reports_clone_dir`, `tmp_dir`) |
 | `database` | SQLAlchemy URL (postgres in docker, sqlite works for dev) |
-| `llm` | OpenAI-protocol endpoint, key, cheap + smart model names. LLM report narrative is skipped when `api_key` is empty |
+| `llm` | OpenAI-protocol endpoint, key, cheap + smart model names, `request_timeout` (seconds per completion attempt; default 240). LLM report narrative is skipped when `api_key` is empty |
 | `jira` | read-only sync: base_url, email, api_token, JQL |
 | `google` | OAuth client for the dedicated account (gcal read + gmail send) |
 | `discord` | bot token + channel restriction |
 | `reports_repo` | dedicated GitHub repo for markdown reports |
-| `jobs.schedules` | job name → 5-field cron expression ("" disables) |
+| `jobs.schedules` | job name → 5-field cron expression ("" disables). On-demand: `ewo jobs run <name>`; long jobs (e.g. a full `notes_scan`) run best in the background: `ewo jobs run <name> --no-wait`, then watch `ewo jobs runs` |
 | `mcp` | HTTP transport toggle + port |
 | `notes` | read-only markdown notes tree: `root`, `people_dir`, `exclude`, `window_days`, `max_file_chars` |
 | `api_base_url` | where CLI/listeners/MCP find the server |
@@ -56,7 +56,11 @@ Loaded from `ewo.json` or `$EWO_CONFIG_FILENAME`; every CLI command accepts
 
 ewo can read a tree of markdown notes (never writes to it) and pull the
 outstanding work out of it. Set `notes.enabled: true` and `notes.root`, and
-make sure `llm.api_key` is set (extraction uses the `smart_model`).
+make sure `llm.api_key` is set (extraction uses the `smart_model`). Note:
+extraction prompts are long and reasoning models can take minutes per note —
+any proxy in front of the model (e.g. litellm's `request_timeout`, 60s by
+default) must allow at least `llm.request_timeout` seconds per call, or scans
+will stall on 408 retries.
 
 1. **People.** Each team member has a folder `<people_dir>/<name>/` in the
    notes (the `AGENTS.md` inside describes them). `ewo person seed` (or the
@@ -74,15 +78,31 @@ make sure `llm.api_key` is set (extraction uses the `smart_model`).
    their in-window `## YYYY-MM-DD` sections. Run it with `ewo jobs run
    notes_scan [--full]`, the *Scan notes* buttons on the Inbox page, or on a
    schedule via `jobs.schedules.notes_scan`.
-3. **Review.** Items land in the Inbox (`/inbox`, `ewo inbox list`,
-   `GET /api/note-items`). For each: **accept** creates a task
-   (`source=notes`, linked as `notes:<path>:<line>`), **dismiss** drops it, or
-   **already done** records that the note is stale. Reviewed items are never
-   re-surfaced by later scans; re-seen open items only bump `last_seen_at`
-   (which nudges the linked task up in *what next*).
+3. **Review.** Nuggets (work items found in notes) land in the Inbox
+   (`/inbox`, `ewo inbox list`, `GET /api/nuggets`), pre-grouped by their
+   suggested task. Suggestions come from the `nuggets_match` job, which also
+   runs at the end of every scan: items repeated across notes files inherit
+   the task their twin was attached to, and the LLM matches the rest. For
+   each nugget: **attach** adds it to the suggested/selected task (or a new
+   one, `source=notes`, citation linked as `notes:<path>:<line>:<id>`; Jira
+   keys mentioned in the note become task links), **dismiss** drops it, or
+   **already done** records that the note is stale. Reviewed nuggets are
+   never re-surfaced by later scans; re-seen open nuggets only bump
+   `last_seen_at` (which nudges the linked task up in *what next*).
 
 A full rescan of a two-month window over ~90 notes is on the order of 300k
 input tokens; incremental scans are usually a handful of files.
+
+## Task organization
+
+Tasks are coherent pieces of work (topics) that collect nuggets: the task
+detail panel lists its attached nuggets, where they can be edited, moved to
+another task, or detached back to the inbox. Tasks form a single-parent tree
+(sub-tasks of any depth) and have start/due dates plus an auto-recorded
+completion time. A task can link to several Jira issues, and one issue can
+be linked from several tasks. The *Organize (AI)* button on the Tasks page
+asks the smart model for merge/split/create/retitle proposals — nothing
+changes until you confirm a proposal.
 
 ## Google (one-time)
 
@@ -121,5 +141,5 @@ optionally `discord.channel_id`, and set `discord.enabled: true`. Commands:
   `python -m ewo.mcp.server` as a service.
 
 Tools: `ewo_list_tasks`, `ewo_create_task`, `ewo_set_task_status`,
-`ewo_what_next`, `ewo_run_job`, `ewo_inbox_list`, `ewo_inbox_accept`,
+`ewo_what_next`, `ewo_run_job`, `ewo_inbox_list`, `ewo_inbox_attach`,
 `ewo_inbox_resolve`.

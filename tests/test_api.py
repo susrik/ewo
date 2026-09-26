@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from ewo.config import NotesConfig
-from ewo.core import note_items
-from ewo.db.models import NoteItemKind
+from ewo.core import nuggets
+from ewo.db.models import NuggetKind
 
 
 def _create_person(client: TestClient, name: str = "Anna") -> int:
@@ -67,13 +67,36 @@ def test_task_crud(client: TestClient) -> None:
     assert fetched["priority"] == "high"
     assert fetched["assignee"]["name"] == "Anna"
     assert fetched["tags"][0]["name"] == "infra"
+    assert fetched["parent_id"] is None and fetched["completed_at"] is None
 
     patched = client.patch(f"/api/tasks/{task_id}", json={"status": "done", "tags": ["x"]})
     assert patched.json()["status"] == "done"
     assert patched.json()["tags"][0]["name"] == "x"
+    assert patched.json()["completed_at"] is not None
+
+    reopened = client.patch(f"/api/tasks/{task_id}", json={"status": "open"})
+    assert reopened.json()["completed_at"] is None
 
     assert client.delete(f"/api/tasks/{task_id}").status_code == 200
     assert client.get(f"/api/tasks/{task_id}").status_code == 404
+
+
+def test_task_hierarchy(client: TestClient) -> None:
+    parent_id = _create_task(client, title="epic")
+    child_id = _create_task(client, title="story", parent_id=parent_id)
+    fetched = client.get(f"/api/tasks/{child_id}").json()
+    assert fetched["parent_id"] == parent_id
+
+    assert client.post("/api/tasks", json={"title": "bad", "parent_id": 999}).status_code == 404
+    assert client.patch(f"/api/tasks/{parent_id}", json={"parent_id": child_id}).status_code == 400
+    assert client.patch(f"/api/tasks/{child_id}", json={"parent_id": child_id}).status_code == 400
+
+    # reparenting works when it creates no cycle
+    other_id = _create_task(client, title="other epic")
+    assert (
+        client.patch(f"/api/tasks/{child_id}", json={"parent_id": other_id}).json()["parent_id"]
+        == other_id
+    )
 
 
 def test_task_filters(client: TestClient) -> None:
@@ -191,29 +214,30 @@ def test_seed_people_from_notes(client: TestClient, notes_root: Path) -> None:
     assert client.post("/api/people/seed-from-notes").json()["created"] == []
 
 
-def test_note_items_endpoints(client: TestClient, session: Session) -> None:
+def test_nugget_endpoints(client: TestClient, session: Session) -> None:
     owner_id = _create_person(client, "Neda")
-    item, _ = note_items.upsert_item(
-        session, "swd/x.md", 7, "Add SSO", NoteItemKind.ACTION, owner_id=owner_id
+    item, _ = nuggets.upsert_nugget(
+        session, "swd/x.md", 7, "Add SSO", NuggetKind.ACTION, owner_id=owner_id
     )
-    other, _ = note_items.upsert_item(session, "ai/y.md", 2, "Budget", NoteItemKind.RISK)
-    third, _ = note_items.upsert_item(session, "ai/z.md", 9, "Old thing", NoteItemKind.ACTION)
+    other, _ = nuggets.upsert_nugget(session, "ai/y.md", 2, "Budget", NuggetKind.RISK)
+    third, _ = nuggets.upsert_nugget(session, "ai/z.md", 9, "Old thing", NuggetKind.ACTION)
     session.commit()
 
-    listed = client.get("/api/note-items").json()
+    listed = client.get("/api/nuggets").json()
     assert [i["summary"] for i in listed] == ["Budget", "Old thing", "Add SSO"]
     assert listed[2]["owner"]["name"] == "Neda"
-    assert client.get("/api/note-items", params={"owner_id": owner_id}).json()[0]["id"] == item.id
-    assert len(client.get("/api/note-items", params={"path_prefix": "ai/"}).json()) == 2
+    assert listed[2]["jira_keys"] == [] and listed[2]["suggested_task_id"] is None
+    assert client.get("/api/nuggets", params={"owner_id": owner_id}).json()[0]["id"] == item.id
+    assert len(client.get("/api/nuggets", params={"path_prefix": "ai/"}).json()) == 2
 
-    patched = client.patch(f"/api/note-items/{item.id}", json={"summary": "Add SSO to glitchtip"})
+    patched = client.patch(f"/api/nuggets/{item.id}", json={"summary": "Add SSO to glitchtip"})
     assert patched.json()["summary"] == "Add SSO to glitchtip"
 
-    accepted = client.post(
-        f"/api/note-items/{item.id}/accept", json={"priority": "high", "due_date": "2026-10-01"}
+    attached = client.post(
+        f"/api/nuggets/{item.id}/attach", json={"priority": "high", "due_date": "2026-10-01"}
     )
-    assert accepted.status_code == 201
-    task = accepted.json()
+    assert attached.status_code == 201
+    task = attached.json()
     assert task["source"] == "notes" and task["assignee"]["name"] == "Neda"
     assert task["external_links"][0] == {
         **task["external_links"][0],
@@ -221,21 +245,76 @@ def test_note_items_endpoints(client: TestClient, session: Session) -> None:
         "external_key": f"swd/x.md:7:{item.id}",
     }
 
-    assert client.post(f"/api/note-items/{other.id}/dismiss").json()["status"] == "dismissed"
-    assert client.post(f"/api/note-items/{third.id}/done").json()["status"] == "already_done"
-    assert client.get("/api/note-items").json() == []
-    assert len(client.get("/api/note-items", params={"status": ""}).json()) == 3
+    assert client.post(f"/api/nuggets/{other.id}/dismiss").json()["status"] == "dismissed"
+    assert client.post(f"/api/nuggets/{third.id}/done").json()["status"] == "already_done"
+    assert client.get("/api/nuggets").json() == []
+    assert len(client.get("/api/nuggets", params={"status": ""}).json()) == 3
     assert (
-        client.get("/api/note-items", params={"status": "accepted"}).json()[0]["task_id"]
-        == task["id"]
+        client.get("/api/nuggets", params={"status": "attached"}).json()[0]["task_id"] == task["id"]
     )
 
 
-def test_note_items_404s(client: TestClient) -> None:
-    assert client.patch("/api/note-items/999", json={"summary": "x"}).status_code == 404
-    assert client.post("/api/note-items/999/accept", json={}).status_code == 404
-    assert client.post("/api/note-items/999/dismiss").status_code == 404
-    assert client.post("/api/note-items/999/done").status_code == 404
+def test_nugget_attach_move_detach(client: TestClient, session: Session) -> None:
+    first = client.post("/api/tasks", json={"title": "first"}).json()
+    second = client.post("/api/tasks", json={"title": "second"}).json()
+    item, _ = nuggets.upsert_nugget(
+        session, "swd/x.md", 3, "detail", NuggetKind.ACTION, jira_keys=["PROJ-9"]
+    )
+    session.commit()
+
+    # attach to an existing task
+    attached = client.post(f"/api/nuggets/{item.id}/attach", json={"task_id": first["id"]})
+    assert attached.status_code == 201
+    assert attached.json()["title"] == "first"
+    keys = {(link["system"], link["external_key"]) for link in attached.json()["external_links"]}
+    assert ("jira", "PROJ-9") in keys  # jira keys follow the nugget
+
+    # task nuggets listing
+    listed = client.get(f"/api/tasks/{first['id']}/nuggets").json()
+    assert [n["id"] for n in listed] == [item.id]
+    assert client.get("/api/tasks/999/nuggets").status_code == 404
+
+    # move to another task
+    moved = client.post(f"/api/nuggets/{item.id}/move", json={"task_id": second["id"]})
+    assert moved.json()["task_id"] == second["id"]
+    assert client.get(f"/api/tasks/{second['id']}/nuggets").json()[0]["id"] == item.id
+    assert client.post(f"/api/nuggets/{item.id}/move", json={"task_id": 999}).status_code == 404
+
+    # detach returns it to the inbox
+    detached = client.post(f"/api/nuggets/{item.id}/detach")
+    assert detached.json()["status"] == "new" and detached.json()["task_id"] is None
+    assert client.get(f"/api/tasks/{second['id']}/nuggets").json() == []
+
+
+def test_nugget_404s(client: TestClient) -> None:
+    assert client.patch("/api/nuggets/999", json={"summary": "x"}).status_code == 404
+    assert client.post("/api/nuggets/999/attach", json={}).status_code == 404
+    assert client.post("/api/nuggets/999/dismiss").status_code == 404
+    assert client.post("/api/nuggets/999/done").status_code == 404
+    assert client.post("/api/nuggets/999/detach").status_code == 404
+
+
+def test_task_link_endpoints(client: TestClient) -> None:
+    task = client.post("/api/tasks", json={"title": "linkable"}).json()
+    created = client.post(
+        f"/api/tasks/{task['id']}/links", json={"system": "jira", "external_key": "PROJ-1"}
+    )
+    assert created.status_code == 201
+    missing = client.post("/api/tasks/999/links", json={"system": "jira", "external_key": "P-1"})
+    assert missing.status_code == 404
+
+    # the same jira issue can sit on a second task
+    other = client.post("/api/tasks", json={"title": "also linkable"}).json()
+    again = client.post(
+        f"/api/tasks/{other['id']}/links", json={"system": "jira", "external_key": "PROJ-1"}
+    )
+    assert again.status_code == 201
+
+    [link] = [link for link in created.json()["external_links"] if link["system"] == "jira"]
+    assert client.delete(f"/api/tasks/{task['id']}/links/{link['id']}").status_code == 200
+    assert client.get(f"/api/tasks/{task['id']}").json()["external_links"] == []
+    assert client.delete(f"/api/tasks/{task['id']}/links/{link['id']}").status_code == 404
+    assert client.delete(f"/api/tasks/{task['id']}/links/999").status_code == 404
 
 
 def test_reports_endpoints(client: TestClient) -> None:
@@ -247,3 +326,23 @@ def test_reports_endpoints(client: TestClient) -> None:
     assert "# What next" in detail["body"]
 
     assert client.get("/api/reports/999").status_code == 404
+
+
+def test_run_job_no_wait(client: TestClient) -> None:
+    import time
+
+    response = client.post("/api/jobs/what_next/run", params={"wait": "false"})
+    assert response.status_code == 202
+    run_id = response.json()["id"]
+
+    deadline = time.time() + 5
+    status = ""
+    while time.time() < deadline:
+        [run] = [r for r in client.get("/api/jobs/runs").json() if r["id"] == run_id]
+        status = run["status"]
+        if status != "running":
+            break
+        time.sleep(0.05)
+    assert status == "success"
+
+    assert client.post("/api/jobs/nope/run", params={"wait": "false"}).status_code == 404

@@ -1,17 +1,95 @@
-<div class="mt-2 p-3 rounded bg-base-200 text-sm grid gap-2">
+<div class="mt-2 p-3 rounded bg-base-200 text-sm grid gap-3">
   {% if task.description %}<p class="whitespace-pre-line">{{ task.description }}</p>{% endif %}
   <div class="opacity-70">
     source: {{ task.source.value }} · created {{ task.created_at.strftime('%Y-%m-%d') }} · updated {{ task.updated_at.strftime('%Y-%m-%d') }}
-    {% for link in task.external_links %} · <span class="font-mono">{{ link.system }}:{{ link.external_key }}</span>{% endfor %}
+    {% if task.start_date %} · starts {{ task.start_date.isoformat() }}{% endif %}
+    {% if task.completed_at %} · completed {{ task.completed_at.strftime('%Y-%m-%d') }}{% endif %}
+    {% if task.parent %} · parent #{{ task.parent.id }} {{ task.parent.title }}{% endif %}
   </div>
-  <ul class="grid gap-1">
-    {% for note in task.notes %}
-    <li><span class="opacity-60">{{ note.created_at.strftime('%Y-%m-%d %H:%M') }}</span> {{ note.body }}</li>
-    {% endfor %}
-  </ul>
-  <form hx-post="/gui/tasks/{{ task.id }}/notes" hx-target="#task-{{ task.id }}-detail" class="flex gap-2">
-    <input class="input input-bordered input-sm flex-1" name="body" placeholder="Add a note" required>
-    <button class="btn btn-sm" type="submit">Note</button>
-    <button class="btn btn-sm btn-ghost" type="button" onclick="this.closest('div[id$=-detail]').innerHTML=''">Close</button>
-  </form>
+
+  <div>
+    <h3 class="font-semibold">Nuggets (from notes)</h3>
+    <div class="grid gap-2 mt-1">
+      {% for nugget in task.nuggets %}
+      <div class="border border-base-300 rounded p-2 bg-base-100">
+        <div class="flex flex-wrap items-baseline gap-2">
+          <span class="badge badge-xs {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span>
+          <span class="text-xs opacity-60 font-mono">{{ nugget.path }}:{{ nugget.line }}</span>
+          {% if nugget.due_date %}<span class="badge badge-xs badge-error badge-outline">due {{ nugget.due_date.isoformat() }}</span>{% endif %}
+          {% for key in nugget.jira_keys %}<span class="badge badge-xs badge-primary badge-outline">{{ key }}</span>{% endfor %}
+        </div>
+        <form hx-post="/gui/nuggets/{{ nugget.id }}/edit" hx-target="#task-{{ task.id }}-detail" class="flex flex-wrap gap-1 mt-1 items-center">
+          <input class="input input-bordered input-xs flex-1 min-w-48" name="summary" value="{{ nugget.summary }}" required>
+          <select class="select select-bordered select-xs" name="kind">
+            {% for k in kinds %}<option value="{{ k.value }}" {% if k == nugget.kind %}selected{% endif %}>{{ k.value }}</option>{% endfor %}
+          </select>
+          <input class="input input-bordered input-xs" type="date" name="due_date" value="{{ nugget.due_date.isoformat() if nugget.due_date else '' }}">
+          <button class="btn btn-xs" type="submit">Save</button>
+        </form>
+        <div class="flex flex-wrap gap-1 mt-1 items-center">
+          <form hx-post="/gui/nuggets/{{ nugget.id }}/move" hx-target="#task-{{ task.id }}-detail" class="flex gap-1 items-center">
+            <select class="select select-bordered select-xs max-w-56" name="task_id">
+              {% for other in open_tasks %}
+              {% if other.id != task.id %}<option value="{{ other.id }}">#{{ other.id }} {{ other.title }}</option>{% endif %}
+              {% endfor %}
+            </select>
+            <button class="btn btn-xs btn-ghost" type="submit">Move</button>
+          </form>
+          <button class="btn btn-xs btn-ghost" hx-post="/gui/nuggets/{{ nugget.id }}/detach" hx-target="#task-{{ task.id }}-detail" title="Remove from this task (back to the inbox)">Detach</button>
+        </div>
+      </div>
+      {% else %}
+      <p class="opacity-60">No nuggets attached yet — attach some from the <a class="link" href="/inbox">inbox</a>.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div>
+    <h3 class="font-semibold">Links</h3>
+    <div class="flex flex-wrap gap-2 mt-1 items-center">
+      {% for link in task.external_links %}
+      <span class="badge badge-outline gap-1">
+        {% if link.url %}<a class="link link-primary" href="{{ link.url }}">{{ link.system }}:{{ link.external_key }}</a>{% else %}{{ link.system }}:{{ link.external_key }}{% endif %}
+        {% if link.external_status %}({{ link.external_status }}){% endif %}
+        <button class="btn btn-ghost btn-xs px-1" hx-post="/gui/tasks/{{ task.id }}/links/{{ link.id }}/delete" hx-target="#task-{{ task.id }}-detail" title="Remove link">✕</button>
+      </span>
+      {% endfor %}
+      <form hx-post="/gui/tasks/{{ task.id }}/links" hx-target="#task-{{ task.id }}-detail" class="flex gap-1 items-center">
+        <input class="input input-bordered input-xs w-40" name="jira_keys" placeholder="PROJ-123, PROJ-456">
+        <button class="btn btn-xs" type="submit">Add Jira</button>
+      </form>
+    </div>
+  </div>
+
+  <div>
+    <h3 class="font-semibold">Sub-tasks</h3>
+    <ul class="grid gap-1 mt-1">
+      {% for child in task.children %}
+      <li>
+        <span class="badge badge-xs badge-outline">{{ child.status.value }}</span>
+        #{{ child.id }} {{ child.title }}
+      </li>
+      {% else %}
+      <li class="opacity-60">No sub-tasks.</li>
+      {% endfor %}
+    </ul>
+    <form hx-post="/gui/tasks/{{ task.id }}/children" hx-target="#task-{{ task.id }}-detail" class="flex gap-2 mt-1">
+      <input class="input input-bordered input-sm flex-1" name="title" placeholder="Add a sub-task" required>
+      <button class="btn btn-sm" type="submit">Add</button>
+    </form>
+  </div>
+
+  <div>
+    <h3 class="font-semibold">Notes</h3>
+    <ul class="grid gap-1 mt-1">
+      {% for note in task.notes %}
+      <li><span class="opacity-60">{{ note.created_at.strftime('%Y-%m-%d %H:%M') }}</span> {{ note.body }}</li>
+      {% endfor %}
+    </ul>
+    <form hx-post="/gui/tasks/{{ task.id }}/notes" hx-target="#task-{{ task.id }}-detail" class="flex gap-2 mt-1">
+      <input class="input input-bordered input-sm flex-1" name="body" placeholder="Add a note" required>
+      <button class="btn btn-sm" type="submit">Note</button>
+      <button class="btn btn-sm btn-ghost" type="button" onclick="this.closest('div[id$=-detail]').innerHTML=''">Close</button>
+    </form>
+  </div>
 </div>
