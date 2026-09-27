@@ -82,7 +82,16 @@ rationale.
   GUI: "Group topic (AI)" form on the tasks page → `_topic_group.html` in
   `#organize-result` (checkbox list + new/existing parent radio), apply via
   `POST /gui/tasks/organize/group` → `_tasks_oob.html` (validation errors
-  render inline in the OOB `#organize-result` slot).
+  render inline in the OOB `#organize-result` slot). Splitting one task from
+  free-form instructions is the same stateless pattern on the detail panel:
+  "Split (AI)" form (only when `llm_enabled`, passed via `_detail_context`) →
+  `POST /gui/tasks/organize/split/propose` → `propose_split_parts` →
+  `_split_proposal.html` in `#task-{id}-detail` (checkbox per part + hidden
+  `proposal` JSON/`task_id`/`mode`); `POST /gui/tasks/organize/split/apply`
+  re-validates the hidden proposal against the currently attached nuggets,
+  applies only the checked parts via `apply_split_parts`, and returns
+  `_split_applied.html` (fresh `#task-list` + OOB `#task-{id}-detail`, errors
+  inline). These split routes are declared before `/gui/tasks/{task_id}`.
 - Tasks form a single-parent tree of arbitrary depth (`Task.parent_id`, cycle
   checks in `core/tasks.py`); `completed_at` is auto-managed on status→done.
   One external key (e.g. a Jira issue) may be linked from many tasks; links

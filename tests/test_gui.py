@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -357,6 +358,94 @@ def test_tasks_topic_group_flow(client: TestClient, session: Session) -> None:
     )
     assert "part of the group" in errored.text
     assert client.get(f"/api/tasks/{copy['id']}").json()["parent_id"] == parent["id"]
+
+
+def test_task_split_parts_flow(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "big mixed task"}).json()
+    propose_url = "/gui/tasks/organize/split/propose"
+    apply_url = "/gui/tasks/organize/split/apply"
+
+    # no llm key configured: the detail form is hidden, and the endpoint explains
+    assert "Split (AI)" not in client.get(f"/gui/tasks/{task['id']}/detail").text
+    no_key = client.post(
+        propose_url, data={"task_id": str(task["id"]), "instructions": "break it up"}
+    )
+    assert "No LLM API key" in no_key.text
+
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+    assert "Split (AI)" in client.get(f"/gui/tasks/{task['id']}/detail").text
+    blank = client.post(propose_url, data={"task_id": str(task["id"]), "instructions": "  "})
+    assert "Enter split instructions" in blank.text
+
+    first = _item(session, "part one")
+    second = _item(session, "part two", "ai/y.md")
+    client.post(f"/api/nuggets/{first}/attach", json={"task_id": task["id"]})
+    client.post(f"/api/nuggets/{second}/attach", json={"task_id": task["id"]})
+
+    # the proposal renders as a checkbox list with hidden proposal JSON + mode
+    from ewo.core.llm import FakeLLM
+
+    proposal_json = json.dumps(
+        {
+            "mode": "children",
+            "parts": [
+                {"title": "half a", "nugget_ids": [first], "reason": "one side"},
+                {"title": "half b", "nugget_ids": [second], "reason": "other side"},
+            ],
+        }
+    )
+    client.app.state.llm = FakeLLM(responses=[proposal_json])  # type: ignore[attr-defined]
+    proposed = client.post(
+        propose_url, data={"task_id": str(task["id"]), "instructions": "break it up"}
+    )
+    assert "half a" in proposed.text and "half b" in proposed.text
+    assert 'name="proposal"' in proposed.text and 'value="children"' in proposed.text
+    assert 'name="selected"' in proposed.text
+
+    # an LLM returning garbage surfaces as an inline error, not a 500
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    errored = client.post(propose_url, data={"task_id": str(task["id"]), "instructions": "again"})
+    assert "did not return valid split parts" in errored.text
+
+    # applying with only the first part checked refreshes list + detail (OOB)
+    form = (
+        f"task_id={task['id']}&mode=children"
+        f"&proposal={urllib.parse.quote(proposal_json)}&selected=0"
+    )
+    applied = client.post(
+        apply_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert applied.status_code == 200
+    assert "half a" in applied.text and "half b" not in applied.text
+    assert f'id="task-{task["id"]}-detail" hx-swap-oob' in applied.text
+    all_tasks = client.get("/api/tasks").json()
+    [child] = [t for t in all_tasks if t["title"] == "half a"]
+    assert child["parent_id"] == task["id"]
+    assert client.get(f"/api/tasks/{child['id']}/nuggets").json()[0]["id"] == first
+    # the unchecked part was not created and its nugget stayed on the source
+    [remaining] = client.get(f"/api/tasks/{task['id']}/nuggets").json()
+    assert remaining["id"] == second
+
+    # a mode that contradicts the hidden proposal is rejected, nothing changes
+    count = len(all_tasks)
+    bad_mode = (
+        f"task_id={task['id']}&mode=siblings"
+        f"&proposal={urllib.parse.quote(proposal_json)}&selected=0"
+    )
+    mismatch = client.post(
+        apply_url, content=bad_mode, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert "does not match" in mismatch.text
+    assert len(client.get("/api/tasks").json()) == count
+
+    # nothing selected -> inline error, no new tasks
+    no_selection = client.post(
+        apply_url,
+        content=f"task_id={task['id']}&mode=children&proposal={urllib.parse.quote(proposal_json)}",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert "no split parts selected" in no_selection.text
+    assert len(client.get("/api/tasks").json()) == count
 
 
 # --- labels (tags) ---

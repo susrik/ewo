@@ -365,6 +365,73 @@ def organize_group(
     return _render(request, "_tasks_oob.html", context)
 
 
+@router.post("/gui/tasks/organize/split/propose", response_class=HTMLResponse)
+def organize_split_propose(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+    task_id: Annotated[int, Form()],
+    instructions: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Propose an AI split of one task into parts; render the review form in the
+    task's detail panel. Stateless: the validated proposal round-trips through
+    hidden form fields and is re-validated at apply time."""
+    instructions = instructions.strip()
+    context = _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key))
+    context["error"] = None
+    context["proposal"] = None
+    context["proposal_json"] = ""
+    context["instructions"] = instructions
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    elif not instructions:
+        context["error"] = "Enter split instructions first."
+    else:
+        try:
+            proposal, _tokens = task_organize.propose_split_parts(
+                session, llm, task_id, instructions
+            )
+            context["proposal"] = proposal
+            context["proposal_json"] = proposal.model_dump_json()
+        except ValueError as exc:
+            context["error"] = str(exc)
+    return _render(request, "_split_proposal.html", context)
+
+
+@router.post("/gui/tasks/organize/split/apply", response_class=HTMLResponse)
+def organize_split_apply(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    task_id: Annotated[int, Form()],
+    mode: Annotated[str, Form()],
+    proposal: Annotated[str, Form()],
+    selected: Annotated[list[int] | None, Form()] = None,
+) -> HTMLResponse:
+    """Re-validate the hidden proposal against the task's current nuggets and
+    apply only the checked parts, then refresh the task list plus the source
+    task's detail panel (out-of-band)."""
+    error: str | None = None
+    try:
+        parsed = task_organize.SplitPartsProposal.model_validate_json(proposal)
+        if parsed.mode != mode:
+            raise ValueError("split mode does not match the proposal")
+        attached = tasks.list_attached_nuggets(session, task_id)
+        validated = task_organize._validate_split_parts(parsed, attached)
+        chosen = set(selected or [])
+        picked = [part for index, part in enumerate(validated.parts) if index in chosen]
+        if not picked:
+            raise ValueError("no split parts selected")
+        task_organize.apply_split_parts(session, task_id, picked, validated.mode)
+    except ValueError as exc:
+        error = str(exc)
+    context = _task_context(session)
+    context["split_error"] = error
+    context.update(_detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)))
+    return _render(request, "_split_applied.html", context)
+
+
 @router.get("/gui/tasks/{task_id}", response_class=HTMLResponse)
 def task_row(request: Request, task_id: int, session: SessionDep) -> HTMLResponse:
     return _render(request, "_task_row.html", {"task": tasks.get_task(session, task_id)})
@@ -443,35 +510,50 @@ def set_task_status(
     return _render(request, "_task_row.html", {"task": task})
 
 
-def _detail_context(session: Session, task_id: int) -> dict[str, object]:
+def _detail_context(session: Session, task_id: int, llm_enabled: bool = False) -> dict[str, object]:
     return {
         "task": tasks.get_task(session, task_id),
         "open_tasks": tasks.list_tasks(session),
         "kinds": list(NuggetKind),
+        "llm_enabled": llm_enabled,
     }
 
 
 @router.get("/gui/tasks/{task_id}/detail", response_class=HTMLResponse)
-def task_detail(request: Request, task_id: int, session: SessionDep) -> HTMLResponse:
-    return _render(request, "_task_detail.html", _detail_context(session, task_id))
+def task_detail(
+    request: Request, task_id: int, session: SessionDep, config: ConfigDep
+) -> HTMLResponse:
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)),
+    )
 
 
 @router.post("/gui/tasks/{task_id}/notes", response_class=HTMLResponse)
 def task_add_note(
-    request: Request, task_id: int, session: SessionDep, body: Annotated[str, Form()]
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    body: Annotated[str, Form()],
 ) -> HTMLResponse:
     if body.strip():
         tasks.add_note(session, body.strip(), task_id=task_id)
-    return task_detail(request, task_id, session)
+    return task_detail(request, task_id, session, config)
 
 
 @router.post("/gui/tasks/{task_id}/children", response_class=HTMLResponse)
 def task_add_child(
-    request: Request, task_id: int, session: SessionDep, title: Annotated[str, Form()]
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    title: Annotated[str, Form()],
 ) -> HTMLResponse:
     if title.strip():
         tasks.create_task(session, title=title.strip(), parent_id=task_id)
-    return task_detail(request, task_id, session)
+    return task_detail(request, task_id, session, config)
 
 
 @router.post("/gui/tasks/{task_id}/links", response_class=HTMLResponse)
@@ -487,15 +569,15 @@ def task_add_links(
     if keys:
         nuggets.ensure_jira_links(session, task, keys, _jira_base_url(config))
         session.commit()
-    return task_detail(request, task_id, session)
+    return task_detail(request, task_id, session, config)
 
 
 @router.post("/gui/tasks/{task_id}/links/{link_id}/delete", response_class=HTMLResponse)
 def task_delete_link(
-    request: Request, task_id: int, link_id: int, session: SessionDep
+    request: Request, task_id: int, link_id: int, session: SessionDep, config: ConfigDep
 ) -> HTMLResponse:
     tasks.unlink_external(session, task_id, link_id)
-    return task_detail(request, task_id, session)
+    return task_detail(request, task_id, session, config)
 
 
 # --- inbox (nuggets) ---
@@ -630,6 +712,7 @@ def nugget_edit(
     request: Request,
     nugget_id: int,
     session: SessionDep,
+    config: ConfigDep,
     summary: Annotated[str, Form()],
     kind: Annotated[str, Form()] = "",
     due_date: Annotated[str, Form()] = "",
@@ -642,7 +725,11 @@ def nugget_edit(
         fields["kind"] = NuggetKind(kind)
     fields["due_date"] = _opt_date(due_date)
     nuggets.update_nugget(session, nugget_id, **fields)
-    return _render(request, "_task_detail.html", _detail_context(session, task_id))  # type: ignore[arg-type]
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)),  # type: ignore[arg-type]
+    )
 
 
 @router.post("/gui/nuggets/{nugget_id}/move", response_class=HTMLResponse)
@@ -650,22 +737,33 @@ def nugget_move(
     request: Request,
     nugget_id: int,
     session: SessionDep,
+    config: ConfigDep,
     task_id: Annotated[int, Form()],
 ) -> HTMLResponse:
     """Move a nugget to another task; re-render the (now former) task panel."""
     nugget = nuggets.get_nugget(session, nugget_id)
     source_task_id = nugget.task_id
     nuggets.move_nugget(session, nugget_id, task_id)
-    return _render(request, "_task_detail.html", _detail_context(session, source_task_id))  # type: ignore[arg-type]
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, source_task_id, llm_enabled=bool(config.llm.api_key)),  # type: ignore[arg-type]
+    )
 
 
 @router.post("/gui/nuggets/{nugget_id}/detach", response_class=HTMLResponse)
-def nugget_detach(request: Request, nugget_id: int, session: SessionDep) -> HTMLResponse:
+def nugget_detach(
+    request: Request, nugget_id: int, session: SessionDep, config: ConfigDep
+) -> HTMLResponse:
     """Remove a nugget from its task (back to the inbox); re-render the panel."""
     nugget = nuggets.get_nugget(session, nugget_id)
     source_task_id = nugget.task_id
     nuggets.detach_nugget(session, nugget_id)
-    return _render(request, "_task_detail.html", _detail_context(session, source_task_id))  # type: ignore[arg-type]
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, source_task_id, llm_enabled=bool(config.llm.api_key)),  # type: ignore[arg-type]
+    )
 
 
 # declared last: the catch-all action route would otherwise shadow the
