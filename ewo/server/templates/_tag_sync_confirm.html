@@ -1,0 +1,12 @@
+<div class="alert alert-info shadow-sm mb-2 flex flex-wrap items-center gap-2">
+  <span>
+    Label{% if added_tags | length > 1 %}s{% endif %}
+    {% for name in added_tags %}<span class="badge badge-sm badge-outline">{{ name }}</span>{% endfor %}
+    added to #{{ task.id }} — apply to all sub-tasks?
+  </span>
+  <form hx-post="/gui/tasks/{{ task.id }}/propagate-tags" hx-target="#task-list" class="flex gap-1 items-center">
+    <input type="hidden" name="names" value="{{ added_tags | join(',') }}">
+    <button class="btn btn-xs btn-primary" type="submit">Apply to sub-tasks</button>
+    <button class="btn btn-xs btn-ghost" type="button" onclick="document.getElementById('tag-sync-banner').innerHTML=''">Dismiss</button>
+  </form>
+</div>

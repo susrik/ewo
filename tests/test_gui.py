@@ -274,6 +274,101 @@ def test_tasks_organize_split_create_retitle(client: TestClient, session: Sessio
     assert "renamed" in retitled.text
 
 
+# --- labels (tags) ---
+
+
+def test_labels_page_crud(client: TestClient) -> None:
+    page = client.get("/labels")
+    assert page.status_code == 200 and "No labels yet" in page.text
+
+    created = client.post("/gui/labels", data={"name": "Infra ", "description": "platform work"})
+    assert "infra" in created.text and "platform work" in created.text
+
+    [tag] = client.get("/api/tags").json()
+    assert tag["name"] == "infra" and tag["description"] == "platform work"
+
+    edit_form = client.get(f"/gui/labels/{tag['id']}/edit")
+    assert 'value="infra"' in edit_form.text
+
+    updated = client.post(
+        f"/gui/labels/{tag['id']}", data={"name": "Platform", "description": "new desc"}
+    )
+    assert "platform" in updated.text and "new desc" in updated.text
+
+    deleted = client.post(f"/gui/labels/{tag['id']}/delete")
+    assert "No labels yet" in deleted.text
+
+
+def test_tasks_multi_label_filter(client: TestClient) -> None:
+    client.post("/api/tasks", json={"title": "only a", "tags": ["a"]})
+    client.post("/api/tasks", json={"title": "only b", "tags": ["b"]})
+    client.post("/api/tasks", json={"title": "both", "tags": ["a", "b"]})
+
+    page = client.get("/tasks")
+    assert "any selected label" in page.text and "all selected labels" in page.text
+
+    any_match = client.get("/gui/tasks", params=[("tags", "a"), ("tags", "b")])
+    assert "only a" in any_match.text and "only b" in any_match.text and "both" in any_match.text
+
+    all_match = client.get(
+        "/gui/tasks", params=[("tags", "a"), ("tags", "b"), ("tag_match", "all")]
+    )
+    assert "both" in all_match.text
+    assert "only a" not in all_match.text and "only b" not in all_match.text
+
+
+def test_tag_sync_banner_and_propagation(client: TestClient) -> None:
+    parent = client.post("/api/tasks", json={"title": "parent", "tags": ["base"]}).json()
+    child = client.post(
+        "/api/tasks", json={"title": "child", "parent_id": parent["id"], "tags": ["extra"]}
+    ).json()
+
+    # inheritance on create: the child already carries the parent's label
+    child_tags = client.get(f"/api/tasks/{child['id']}").json()["tags"]
+    assert sorted(t["name"] for t in child_tags) == ["base", "extra"]
+
+    # adding a label to a task with descendants offers propagation (OOB banner)
+    response = client.post(
+        f"/gui/tasks/{parent['id']}",
+        data={"title": "parent", "priority": "normal", "status": "open", "tags": "base, new"},
+    )
+    assert "Apply to sub-tasks" in response.text
+    assert 'hx-swap-oob="innerHTML"' in response.text
+
+    # nothing propagated until confirmed
+    child_tags = client.get(f"/api/tasks/{child['id']}").json()["tags"]
+    assert "new" not in [t["name"] for t in child_tags]
+
+    propagated = client.post(f"/gui/tasks/{parent['id']}/propagate-tags", data={"names": "new"})
+    assert propagated.status_code == 200
+    child_tags = client.get(f"/api/tasks/{child['id']}").json()["tags"]
+    assert sorted(t["name"] for t in child_tags) == ["base", "extra", "new"]  # extras survive
+
+
+def test_tag_sync_banner_not_shown_without_changes(client: TestClient) -> None:
+    parent = client.post("/api/tasks", json={"title": "parent", "tags": ["base"]}).json()
+    client.post("/api/tasks", json={"title": "child", "parent_id": parent["id"]})
+
+    # no new labels -> no banner
+    same = client.post(
+        f"/gui/tasks/{parent['id']}",
+        data={"title": "parent", "priority": "normal", "status": "open", "tags": "base"},
+    )
+    assert "Apply to sub-tasks" not in same.text
+
+    # new label but no descendants -> no banner
+    solo = client.post("/api/tasks", json={"title": "solo"}).json()
+    added = client.post(
+        f"/gui/tasks/{solo['id']}",
+        data={"title": "solo", "priority": "normal", "status": "open", "tags": "z"},
+    )
+    assert "Apply to sub-tasks" not in added.text
+
+    # an empty propagation request is a no-op that re-renders the list
+    response = client.post(f"/gui/tasks/{parent['id']}/propagate-tags", data={"names": ""})
+    assert response.status_code == 200 and "parent" in response.text
+
+
 # --- inbox ---
 
 

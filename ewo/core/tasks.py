@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ewo.core.people import NotFoundError
+from ewo.core.tags import normalize_name
 from ewo.db.models import (
     ExternalLink,
     Note,
@@ -25,7 +27,7 @@ from ewo.db.models import (
 def _get_or_create_tags(session: Session, names: list[str]) -> list[Tag]:
     tags: dict[str, Tag] = {}
     for name in names:
-        normalized = name.strip().lower()
+        normalized = normalize_name(name)
         if not normalized or normalized in tags:
             continue
         tag = session.scalars(select(Tag).where(Tag.name == normalized)).first()
@@ -66,6 +68,13 @@ def create_task(
     tags: list[str] | None = None,
 ) -> Task:
     _check_parent(session, None, parent_id)
+    effective_tags = list(tags or [])
+    if parent_id is not None:
+        parent = session.get(Task, parent_id)
+        if parent is not None:
+            # children inherit the parent's labels (additive union, deduped by
+            # normalized name inside _get_or_create_tags)
+            effective_tags += [t.name for t in parent.tags]
     task = Task(
         title=title,
         description=description,
@@ -75,7 +84,7 @@ def create_task(
         parent_id=parent_id,
         start_date=start_date,
         due_date=due_date,
-        tags=_get_or_create_tags(session, tags or []),
+        tags=_get_or_create_tags(session, effective_tags),
     )
     session.add(task)
     session.commit()
@@ -94,6 +103,8 @@ def list_tasks(
     status: TaskStatus | None = None,
     assignee_id: int | None = None,
     tag: str | None = None,
+    tags: list[str] | None = None,
+    tag_match: Literal["any", "all"] = "any",
     include_closed: bool = False,
 ) -> list[Task]:
     query = (
@@ -107,8 +118,15 @@ def list_tasks(
         query = query.where(Task.status.not_in([TaskStatus.DONE, TaskStatus.DROPPED]))
     if assignee_id is not None:
         query = query.where(Task.assignee_id == assignee_id)
-    if tag is not None:
-        query = query.where(Task.tags.any(Tag.name == tag.strip().lower()))
+    names = [n for n in (normalize_name(t) for t in (tags or [])) if n]
+    if tag is not None and normalize_name(tag):
+        names.append(normalize_name(tag))
+    names = list(dict.fromkeys(names))
+    if tag_match == "all":
+        for name in names:
+            query = query.where(Task.tags.any(Tag.name == name))
+    elif names:
+        query = query.where(Task.tags.any(Tag.name.in_(names)))
     return list(session.scalars(query).unique())
 
 

@@ -91,6 +91,7 @@ class Tag(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
+    description: Mapped[str | None] = mapped_column(Text)
 
     tasks: Mapped[list[Task]] = relationship(secondary=task_tags, back_populates="tags")
 

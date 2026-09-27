@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
 from ewo.core import nuggets, one_on_ones, people, task_organize, tasks
+from ewo.core import tags as tags_core
 from ewo.core.dashboard import build_dashboard
 from ewo.core.llm import LLMClient
 from ewo.core.notes import NotesReader
@@ -132,15 +133,20 @@ def _task_context(
     status: str = "",
     assignee: str = "",
     tag: str = "",
+    tags: list[str] | None = None,
+    tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
 ) -> dict[str, object]:
     parsed_status = TaskStatus(status) if status else None
+    selected_tags = [t for t in (tags or []) if t.strip()]
     rows = tasks.list_tasks(
         session,
         status=parsed_status,
         assignee_id=_opt_int(assignee),
         tag=tag or None,
+        tags=selected_tags or None,
+        tag_match=tag_match,
         include_closed=include_closed,
     )
     if source:
@@ -151,11 +157,14 @@ def _task_context(
             "status": status,
             "assignee": assignee,
             "tag": tag,
+            "tags": selected_tags,
+            "tag_match": tag_match,
             "source": source,
             "include_closed": include_closed,
         },
         "people": people.list_people(session),
         "sources": list(TaskSource),
+        "all_tags": tags_core.list_tags(session),
     }
 
 
@@ -167,10 +176,12 @@ def tasks_page(
     status: str = "",
     assignee: str = "",
     tag: str = "",
+    tags: Annotated[list[str] | None, Query()] = None,
+    tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
 ) -> HTMLResponse:
-    context = _task_context(session, status, assignee, tag, source, include_closed)
+    context = _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed)
     context["page"] = "tasks"
     context["llm_enabled"] = bool(config.llm.api_key)
     return _render(request, "tasks.html", context)
@@ -183,13 +194,15 @@ def task_list(
     status: str = "",
     assignee: str = "",
     tag: str = "",
+    tags: Annotated[list[str] | None, Query()] = None,
+    tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
 ) -> HTMLResponse:
     return _render(
         request,
         "_tasks.html",
-        _task_context(session, status, assignee, tag, source, include_closed),
+        _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed),
     )
 
 
@@ -332,6 +345,7 @@ def task_update(
     tags: Annotated[str, Form()] = "",
     description: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
+    before = {t.name for t in tasks.get_task(session, task_id).tags}
     task = tasks.update_task(
         session,
         task_id,
@@ -345,7 +359,23 @@ def task_update(
         due_date=_opt_date(due_date),
         description=description.strip() or None,
     )
+    added = sorted({t.name for t in task.tags} - before)
+    if added and tags_core.descendant_ids(session, task_id):
+        return _render(request, "_task_row_oob.html", {"task": task, "added_tags": added})
     return _render(request, "_task_row.html", {"task": task})
+
+
+@router.post("/gui/tasks/{task_id}/propagate-tags", response_class=HTMLResponse)
+def task_propagate_tags(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    names: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    tag_names = [n.strip() for n in names.split(",") if n.strip()]
+    if tag_names:
+        tags_core.add_tags_to_descendants(session, task_id, tag_names)
+    return _render(request, "_tasks_oob.html", _task_context(session))
 
 
 @router.post("/gui/tasks/{task_id}/status", response_class=HTMLResponse)
@@ -681,6 +711,60 @@ def one_on_one_list(request: Request, session: SessionDep) -> HTMLResponse:
     return _render(
         request, "_one_on_ones.html", {"meetings": one_on_ones.list_one_on_ones(session)}
     )
+
+
+# --- labels (tags) ---
+
+
+def _labels_context(session: Session) -> dict[str, object]:
+    rows = [{"tag": tag, "task_count": len(tag.tasks)} for tag in tags_core.list_tags(session)]
+    return {"rows": rows}
+
+
+@router.get("/labels", response_class=HTMLResponse)
+def labels_page(request: Request, session: SessionDep) -> HTMLResponse:
+    context = _labels_context(session)
+    context["page"] = "labels"
+    return _render(request, "labels.html", context)
+
+
+@router.get("/gui/labels", response_class=HTMLResponse)
+def label_list(request: Request, session: SessionDep) -> HTMLResponse:
+    return _render(request, "_labels.html", _labels_context(session))
+
+
+@router.post("/gui/labels", response_class=HTMLResponse)
+def create_label(
+    request: Request,
+    session: SessionDep,
+    name: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    tags_core.create_tag(session, name, description=description.strip() or None)
+    return label_list(request, session)
+
+
+@router.get("/gui/labels/{tag_id}/edit", response_class=HTMLResponse)
+def label_edit(request: Request, tag_id: int, session: SessionDep) -> HTMLResponse:
+    return _render(request, "_label_edit.html", {"tag": tags_core.get_tag(session, tag_id)})
+
+
+@router.post("/gui/labels/{tag_id}", response_class=HTMLResponse)
+def label_update(
+    request: Request,
+    tag_id: int,
+    session: SessionDep,
+    name: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    tags_core.update_tag(session, tag_id, name=name, description=description)
+    return label_list(request, session)
+
+
+@router.post("/gui/labels/{tag_id}/delete", response_class=HTMLResponse)
+def label_delete(request: Request, tag_id: int, session: SessionDep) -> HTMLResponse:
+    tags_core.delete_tag(session, tag_id)
+    return label_list(request, session)
 
 
 # --- jobs ---

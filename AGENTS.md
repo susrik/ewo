@@ -77,7 +77,22 @@ rationale.
   checks in `core/tasks.py`); `completed_at` is auto-managed on status→done.
   One external key (e.g. a Jira issue) may be linked from many tasks; links
   are unique per task (`uq_external_links_key_task`).
-- GUI: pages `/`, `/tasks`, `/inbox`, `/people`, `/jobs` extend
+- Labels = tags. `Tag` has an optional `description`; service layer lives in
+  `core/tags.py` (`normalize_name` = strip+lower, CRUD, `descendant_ids`,
+  `add_tags_to_descendants`). Inheritance: `create_task` unions the parent's
+  tags into a new child (additive). In the GUI, adding a tag to a task that
+  has descendants returns `_task_row_oob.html` with a `_tag_sync_confirm.html`
+  banner in `#tag-sync-banner`; confirming posts to
+  `POST /gui/tasks/{id}/propagate-tags` → `add_tags_to_descendants`
+  (append-only, returns count of descendants changed). Tag removal is never
+  propagated. Never propagate via `update_task(..., tags=...)` — it replaces
+  the tag set wholesale.
+- Multi-tag filter: `list_tasks(tags=[...], tag_match="any"|"all")`; ANY is
+  the default (OR), ALL chains one `Task.tags.any(...)` per name. The legacy
+  single `tag` kwarg/query param is merged into the `tags` list. The tasks
+  page exposes this as a label checkbox dropdown plus ANY/ALL radios
+  ("Show tasks with: any selected label / all selected labels").
+- GUI: pages `/`, `/tasks`, `/inbox`, `/people`, `/jobs`, `/labels` extend
   `_layout.html`; fragments are `_*.html` and are what htmx swaps in. A
   mutation returns the fragment it belongs to (row, item, list).
 - Reports are generated as markdown and published to the dedicated GitHub

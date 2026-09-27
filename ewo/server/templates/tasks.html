@@ -43,13 +43,33 @@
             <option value="">any source</option>
             {% for s in sources %}<option value="{{ s.value }}" {% if filters.source == s.value %}selected{% endif %}>{{ s.value }}</option>{% endfor %}
           </select>
-          <input class="input input-bordered input-sm w-32" name="tag" placeholder="tag" value="{{ filters.tag }}">
+          <div class="dropdown">
+            <div tabindex="0" role="button" class="btn btn-sm">Labels{% if filters.tags %} ({{ filters.tags | length }}){% endif %}</div>
+            <div tabindex="0" class="dropdown-content z-10 menu p-2 shadow bg-base-100 rounded-box w-52 max-h-64 overflow-y-auto">
+              {% for t in all_tags %}
+              <label class="label cursor-pointer justify-start gap-2 py-1">
+                <input type="checkbox" class="checkbox checkbox-sm" name="tags" value="{{ t.name }}" {% if t.name in filters.tags %}checked{% endif %}>
+                <span class="label-text" {% if t.description %}title="{{ t.description }}"{% endif %}>{{ t.name }}</span>
+              </label>
+              {% else %}
+              <span class="text-sm opacity-60 px-2">No labels yet</span>
+              {% endfor %}
+            </div>
+          </div>
+          <span class="text-sm self-center">Show tasks with:</span>
+          <label class="label cursor-pointer gap-1 text-sm">
+            <input type="radio" class="radio radio-sm" name="tag_match" value="any" {% if filters.tag_match != 'all' %}checked{% endif %}> any selected label
+          </label>
+          <label class="label cursor-pointer gap-1 text-sm">
+            <input type="radio" class="radio radio-sm" name="tag_match" value="all" {% if filters.tag_match == 'all' %}checked{% endif %}> all selected labels
+          </label>
           <label class="label cursor-pointer gap-1 text-sm">
             <input type="checkbox" class="checkbox checkbox-sm" name="include_closed" value="true" {% if filters.include_closed %}checked{% endif %}> closed too
           </label>
         </form>
       </div>
       <div id="organize-result"></div>
+      <div id="tag-sync-banner"></div>
       <div id="task-list">
         {% include "_tasks.html" %}
       </div>

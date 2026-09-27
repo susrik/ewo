@@ -62,6 +62,12 @@ class SeedResultOut(BaseModel):
 class TagOut(ORMModel):
     id: int
     name: str
+    description: str | None
+
+
+class TagUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
 
 
 class ExternalLinkOut(ORMModel):
