@@ -190,6 +190,75 @@ def test_suggest_no_candidates(session: Session) -> None:
     assert summary.reviewed == 0
 
 
+def test_suggest_deterministic_near_duplicate(session: Session) -> None:
+    """A near-identical summary (Jaccard ≥ 0.6) inherits the task — no LLM call."""
+    task = tasks.create_task(session, "the topic")
+    attached = _nugget(session, "fix the IX SLA report", path="a/one.md")
+    nuggets.attach_nugget(session, attached.id, task_id=task.id)
+    similar = _nugget(session, "fix the broken IX SLA report", path="b/two.md")
+    llm = FakeLLM()
+
+    summary = suggest_matches(session, llm)
+    assert summary.reviewed == 1 and summary.suggested == 1
+    assert llm.calls == []  # deterministic pass covered it
+    assert nuggets.get_nugget(session, similar.id).suggested_task_id == task.id
+
+
+def test_suggest_deterministic_dissimilar_falls_through(session: Session) -> None:
+    """Below the Jaccard threshold the nugget goes to the LLM instead of inheriting."""
+    task = tasks.create_task(session, "the topic")
+    attached = _nugget(session, "fix the IX SLA report", path="a/one.md")
+    nuggets.attach_nugget(session, attached.id, task_id=task.id)
+    other = _nugget(session, "report the new hiring plan", path="b/two.md")
+    symbols = _nugget(session, "!!! *** !!!", path="c/three.md")  # no word tokens at all
+    llm = FakeLLM(responses=[_match_response((other.id, None), (symbols.id, None))])
+
+    summary = suggest_matches(session, llm)
+    assert summary.suggested == 0 and summary.no_match == 2
+    assert llm.calls  # nothing matched deterministically
+    assert nuggets.get_nugget(session, other.id).suggested_task_id is None
+
+
+def test_suggest_prompt_shows_attached_summaries(session: Session) -> None:
+    """Task lines show what already lives on each task (≤80 chars per summary)."""
+    topic = tasks.create_task(session, "deploy pipeline work")
+    plain = tasks.create_task(session, "untouched topic")
+    long_summary = "redo the IX dashboard " + "x" * 100
+    for summary_text, path in [("fix the IX SLA report", "a.md"), (long_summary, "b.md")]:
+        nugget = _nugget(session, summary_text, path=path)
+        nuggets.attach_nugget(session, nugget.id, task_id=topic.id)
+    new = _nugget(session, "completely unrelated zzz qqq", path="c.md")
+    llm = FakeLLM(responses=[_match_response((new.id, None))])
+
+    suggest_matches(session, llm)
+    assert len(llm.calls) == 1
+    prompt = str(llm.calls[0]["prompt"])
+    expected = (
+        f"- #{topic.id} deploy pipeline work — attached: fix the IX SLA report; {long_summary[:80]}"
+    )
+    assert expected in prompt.splitlines()
+    assert "x" * 59 not in prompt  # the long summary was truncated
+    assert f"- #{plain.id} untouched topic" in prompt.splitlines()  # no "attached:" suffix
+
+
+def test_suggest_prompt_caps_attached_summaries(session: Session) -> None:
+    """At most three attached summaries per task reach the prompt."""
+    topic = tasks.create_task(session, "busy topic")
+    for i in range(4):
+        nugget = _nugget(session, f"attached detail number {i} zzz", path=f"m/{i}.md")
+        nuggets.attach_nugget(session, nugget.id, task_id=topic.id)
+    new = _nugget(session, "totally different qqq", path="new.md")
+    llm = FakeLLM(responses=[_match_response((new.id, None))])
+
+    suggest_matches(session, llm)
+    prompt = str(llm.calls[0]["prompt"])
+    topic_line = next(line for line in prompt.splitlines() if line.startswith(f"- #{topic.id}"))
+    assert topic_line == (
+        f"- #{topic.id} busy topic — attached: attached detail number 0 zzz; "
+        "attached detail number 1 zzz; attached detail number 2 zzz"
+    )
+
+
 # --- task_organize ---
 
 
