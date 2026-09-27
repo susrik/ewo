@@ -48,7 +48,8 @@
     "schedules": {
       "jira_sync": "*/30 * * * *",
       "daily_report": "0 7 * * 1-5",
-      "notes_scan": "0 6 * * 1-5"
+      "notes_scan": "0 6 * * 1-5",
+      "housekeeping": "15 3 * * *"
     }
   },
   "mcp": {

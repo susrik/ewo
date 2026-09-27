@@ -86,7 +86,13 @@ rationale.
   `POST /gui/tasks/{id}/propagate-tags` → `add_tags_to_descendants`
   (append-only, returns count of descendants changed). Tag removal is never
   propagated. Never propagate via `update_task(..., tags=...)` — it replaces
-  the tag set wholesale.
+  the tag set wholesale. The `housekeeping` job (`core/housekeeping.py`)
+  sweeps the whole task tree roots-first and additively applies missing
+  parent labels to descendants (never removes); registered as `housekeeping`
+  in `jobs/builtin.py`. The `housekeeping` job (`core/housekeeping.py`)
+  sweeps the whole task tree roots-first and additively applies missing
+  parent labels to descendants (never removes); registered as `housekeeping`
+  in `jobs/builtin.py`.
 - Multi-tag filter: `list_tasks(tags=[...], tag_match="any"|"all")`; ANY is
   the default (OR), ALL chains one `Task.tags.any(...)` per name. The legacy
   single `tag` kwarg/query param is merged into the `tags` list. The tasks
