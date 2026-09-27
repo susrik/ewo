@@ -20,6 +20,7 @@ from ewo.db.models import Nugget, NuggetStatus, Task, TaskSource, TaskStatus
 
 _MAX_PROPOSALS = 10
 _MAX_GROUP_TASKS = 20
+_MAX_SPLIT_PARTS = 8
 
 _SYSTEM = """You tidy an engineering manager's task list. Tasks collect "nuggets" (work items
 extracted from notes). Propose only clearly useful changes, at most 10, fewest possible:
@@ -50,6 +51,19 @@ Respond with JSON only, matching:
 - If fewer than 2 tasks relate to the topic, return {"task_ids": [], ...}.
 """
 
+_SPLIT_SYSTEM = """You split one task on an engineering manager's task list into several
+follow-up tasks, guided by the user's instructions.
+
+Respond with JSON only, matching:
+{"mode": "children" or "siblings", "parts": [{"title": str, "nugget_ids": [int], "reason": str}]}
+
+- mode "children": the parts become sub-tasks of the source task.
+- mode "siblings": the parts become independent tasks alongside the source.
+- At most 8 parts, each with a unique title.
+- nugget_ids pick which of the source task's attached nuggets move to the part;
+  use only the listed nugget ids, and use each nugget in at most one part.
+"""
+
 
 class Proposal(BaseModel):
     """One organization suggestion; the GUI renders it with confirm/dismiss."""
@@ -74,6 +88,21 @@ class TopicGroupProposal(BaseModel):
     parent_title: str | None = None
     existing_parent_id: int | None = None
     reason: str = ""
+
+
+class SplitPart(BaseModel):
+    """One piece of a proposed split: a new task plus the nuggets that move to it."""
+
+    title: str
+    nugget_ids: list[int] = Field(default_factory=list)
+    reason: str = ""
+
+
+class SplitPartsProposal(BaseModel):
+    """A proposed split of one task into parts, as children or siblings."""
+
+    mode: Literal["children", "siblings"]
+    parts: list[SplitPart] = Field(default_factory=list)
 
 
 def _strip_fence(text: str) -> str:
@@ -149,6 +178,27 @@ def propose_topic_group(
     return _validate_topic_group(parsed, open_tasks), tokens
 
 
+def propose_split_parts(
+    session: Session, llm: LLMClient, task_id: int, instructions: str
+) -> tuple[SplitPartsProposal, int]:
+    """Propose splitting *task_id* into parts per free-form *instructions*.
+
+    One smart-tier LLM call (+ one retry). Returns (proposal, tokens); the
+    proposal is validated to at most 8 parts with unique titles and disjoint
+    nugget sets drawn from the task's attached nuggets.
+    """
+    task = tasks.get_task(session, task_id)
+    attached = tasks.list_attached_nuggets(session, task_id)
+    nugget_lines = "\n".join(f"- #{n.id} {n.summary}" for n in attached) or "- (none)"
+    prompt = (
+        f"Source task: #{task.id} [{task.status.value}] {task.title}\n\n"
+        f"Attached nuggets:\n{nugget_lines}\n\n"
+        f"Instructions: {instructions}"
+    )
+    parsed, tokens = _parse_llm_json(llm, prompt, _SPLIT_SYSTEM, SplitPartsProposal, "split parts")
+    return _validate_split_parts(parsed, attached), tokens
+
+
 def _validate(
     proposals: list[Proposal], open_tasks: list[Task], new_nuggets: list[Nugget]
 ) -> list[Proposal]:
@@ -196,6 +246,33 @@ def _validate_topic_group(
     return proposal
 
 
+def _validate_split_parts(
+    proposal: SplitPartsProposal, attached: list[Nugget]
+) -> SplitPartsProposal:
+    """Keep at most 8 parts with unique non-empty titles whose nugget_ids are
+    disjoint subsets of the source task's attached nuggets."""
+    attached_ids = {n.id for n in attached}
+    seen_titles: set[str] = set()
+    used_nuggets: set[int] = set()
+    valid: list[SplitPart] = []
+    for part in proposal.parts[:_MAX_SPLIT_PARTS]:
+        title = part.title.strip()
+        if not title or title in seen_titles:
+            continue
+        nugget_ids = list(dict.fromkeys(part.nugget_ids))
+        if not set(nugget_ids) <= attached_ids:
+            continue
+        if used_nuggets & set(nugget_ids):
+            continue
+        part.title = title
+        part.nugget_ids = nugget_ids
+        seen_titles.add(title)
+        used_nuggets.update(nugget_ids)
+        valid.append(part)
+    proposal.parts = valid
+    return proposal
+
+
 def apply_merge(session: Session, into_id: int, from_id: int) -> Task:
     """Merge *from_id* into *into_id*: everything moves, the loser is deleted.
 
@@ -240,6 +317,39 @@ def apply_split(session: Session, task_id: int, nugget_ids: list[int], title: st
         if nugget.task_id == source.id:
             nuggets.move_nugget(session, nugget.id, new_task.id)
     return new_task
+
+
+def apply_split_parts(
+    session: Session,
+    task_id: int,
+    parts: list[SplitPart],
+    mode: Literal["children", "siblings"],
+) -> list[Task]:
+    """Split *task_id* into one new task per part.
+
+    ``children`` parents the new tasks under the source; ``siblings`` places
+    them next to it under the source's own parent. Each new task inherits the
+    source's priority, source and assignee; the part's nuggets move onto it.
+    """
+    if mode not in ("children", "siblings"):
+        raise ValueError(f"unknown split mode {mode!r}")
+    source = tasks.get_task(session, task_id)
+    created: list[Task] = []
+    for part in parts:
+        new_task = tasks.create_task(
+            session,
+            title=part.title,
+            priority=source.priority,
+            source=source.source,
+            assignee_id=source.assignee_id,
+            parent_id=source.id if mode == "children" else source.parent_id,
+        )
+        for nugget_id in part.nugget_ids:
+            nugget = nuggets.get_nugget(session, nugget_id)
+            if nugget.task_id == source.id:
+                nuggets.move_nugget(session, nugget.id, new_task.id)
+        created.append(new_task)
+    return created
 
 
 def apply_create(

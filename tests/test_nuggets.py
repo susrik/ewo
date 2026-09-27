@@ -7,11 +7,18 @@ import json
 import pytest
 from sqlalchemy.orm import Session
 
-from ewo.core import nuggets, task_organize, tasks
+from ewo.core import nuggets, people, task_organize, tasks
 from ewo.core.llm import FakeLLM
 from ewo.core.nugget_match import suggest_matches
 from ewo.core.people import NotFoundError
-from ewo.db.models import Nugget, NuggetKind, NuggetStatus, TaskSource, TaskStatus
+from ewo.db.models import (
+    Nugget,
+    NuggetKind,
+    NuggetStatus,
+    TaskPriority,
+    TaskSource,
+    TaskStatus,
+)
 
 
 def _nugget(
@@ -525,3 +532,129 @@ def test_apply_group_cycle_fails_before_changes(session: Session) -> None:
     # the parent itself in the group is also rejected
     with pytest.raises(ValueError, match="part of the group"):
         task_organize.apply_group(session, [child.id, parent.id], existing_parent_id=parent.id)
+
+
+# --- split parts (free-form split, both modes) ---
+
+
+def _split_parts_response(mode: str, *parts: dict[str, object]) -> str:
+    return json.dumps({"mode": mode, "parts": list(parts)})
+
+
+def test_propose_split_parts_validates(session: Session) -> None:
+    source = tasks.create_task(session, "mixed bag")
+    keep_a = _nugget(session, "bit a", path="a.md", line=1)
+    keep_b = _nugget(session, "bit b", path="b.md", line=2)
+    other = _nugget(session, "elsewhere", path="c.md", line=3)
+    nuggets.attach_nugget(session, keep_a.id, task_id=source.id)
+    nuggets.attach_nugget(session, keep_b.id, task_id=source.id)
+    elsewhere = tasks.create_task(session, "elsewhere")
+    nuggets.attach_nugget(session, other.id, task_id=elsewhere.id)
+    llm = FakeLLM(
+        responses=[
+            _split_parts_response(
+                "children",
+                {"title": "part one", "nugget_ids": [keep_a.id, keep_a.id], "reason": "a"},
+                {"title": " part two ", "nugget_ids": [keep_b.id], "reason": "b"},
+                {"title": "part one", "nugget_ids": []},  # duplicate title -> dropped
+                {"title": "   ", "nugget_ids": []},  # blank title -> dropped
+                {"title": "bad attach", "nugget_ids": [other.id]},  # attached elsewhere
+                {"title": "bad unknown", "nugget_ids": [9999]},  # unknown id
+                {"title": "overlap", "nugget_ids": [keep_a.id]},  # already used
+            )
+        ]
+    )
+    proposal, tokens = task_organize.propose_split_parts(session, llm, source.id, "break it up")
+    assert tokens == 10
+    assert proposal.mode == "children"
+    assert [(p.title, p.nugget_ids) for p in proposal.parts] == [
+        ("part one", [keep_a.id]),
+        ("part two", [keep_b.id]),
+    ]
+    assert llm.calls[0]["smart"] is True
+    prompt = str(llm.calls[0]["prompt"])
+    assert f"Source task: #{source.id} [{source.status.value}] mixed bag" in prompt
+    assert "Instructions: break it up" in prompt
+
+
+def test_propose_split_parts_caps_at_eight(session: Session) -> None:
+    source = tasks.create_task(session, "big task")
+    parts = [{"title": f"part {i}", "nugget_ids": []} for i in range(10)]
+    llm = FakeLLM(responses=[_split_parts_response("siblings", *parts)])
+    proposal, _ = task_organize.propose_split_parts(session, llm, source.id, "split")
+    assert proposal.mode == "siblings"
+    assert [p.title for p in proposal.parts] == [f"part {i}" for i in range(8)]
+    prompt = str(llm.calls[0]["prompt"])
+    assert "Attached nuggets:\n- (none)" in prompt
+
+
+def test_propose_split_parts_bad_json(session: Session) -> None:
+    source = tasks.create_task(session, "a task")
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid split parts"):
+        task_organize.propose_split_parts(session, llm, source.id, "split it")
+
+
+def test_propose_split_parts_missing_task(session: Session) -> None:
+    with pytest.raises(NotFoundError):
+        task_organize.propose_split_parts(session, FakeLLM(), 9999, "split it")
+
+
+def test_apply_split_parts_children(session: Session) -> None:
+    anna = people.create_person(session, "Anna")
+    source = tasks.create_task(
+        session, "mixed bag", priority=TaskPriority.HIGH, assignee_id=anna.id
+    )
+    keep = _nugget(session, "stays", path="a.md", line=1)
+    move_a = _nugget(session, "to part a", path="b.md", line=2)
+    move_b = _nugget(session, "to part b", path="c.md", line=3)
+    for item in (keep, move_a, move_b):
+        nuggets.attach_nugget(session, item.id, task_id=source.id)
+
+    created = task_organize.apply_split_parts(
+        session,
+        source.id,
+        [
+            task_organize.SplitPart(title="part a", nugget_ids=[move_a.id]),
+            task_organize.SplitPart(title="part b", nugget_ids=[move_b.id]),
+        ],
+        "children",
+    )
+    assert [t.title for t in created] == ["part a", "part b"]
+    for new_task in created:
+        assert new_task.parent_id == source.id
+        assert new_task.priority == TaskPriority.HIGH
+        assert new_task.source == source.source
+        assert new_task.assignee_id == anna.id
+    assert [n.id for n in tasks.list_attached_nuggets(session, created[0].id)] == [move_a.id]
+    assert [n.id for n in tasks.list_attached_nuggets(session, created[1].id)] == [move_b.id]
+    assert [n.id for n in tasks.list_attached_nuggets(session, source.id)] == [keep.id]
+    # the citation link follows the moved nugget
+    citation = tasks.find_link(session, "notes", f"b.md:2:{move_a.id}")
+    assert citation is not None and citation.task_id == created[0].id
+
+
+def test_apply_split_parts_siblings(session: Session) -> None:
+    parent = tasks.create_task(session, "umbrella")
+    source = tasks.create_task(session, "mixed bag", parent_id=parent.id)
+    move = _nugget(session, "to sibling", path="a.md", line=1)
+    nuggets.attach_nugget(session, move.id, task_id=source.id)
+
+    created = task_organize.apply_split_parts(
+        session,
+        source.id,
+        [task_organize.SplitPart(title="sib", nugget_ids=[move.id])],
+        "siblings",
+    )
+    assert [t.parent_id for t in created] == [parent.id]
+    assert created[0].priority == source.priority and created[0].source == source.source
+    assert [n.id for n in tasks.list_attached_nuggets(session, created[0].id)] == [move.id]
+    assert tasks.list_attached_nuggets(session, source.id) == []
+
+
+def test_apply_split_parts_rejects_unknown_mode(session: Session) -> None:
+    source = tasks.create_task(session, "source")
+    with pytest.raises(ValueError, match="unknown split mode"):
+        task_organize.apply_split_parts(session, source.id, [], "sideways")  # type: ignore[arg-type]
+    with pytest.raises(NotFoundError):
+        task_organize.apply_split_parts(session, 9999, [], "children")
