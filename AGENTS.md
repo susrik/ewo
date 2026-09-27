@@ -73,6 +73,16 @@ rationale.
   suggested task per new nugget; the inbox groups by it. `core/task_organize.py`
   computes stateless merge/split/create/retitle proposals behind the
   tasks-page "Organize (AI)" button — nothing is persisted until confirmed.
+  The same module powers topic grouping: `propose_topic_group(session, llm,
+  topic)` finds open tasks related to a free-form topic (validated to open
+  ids, capped at 20, needs ≥2) and `apply_group` re-parents the confirmed
+  set under exactly one parent — a new task (`source=manual`) or an existing
+  one — via `tasks.update_task`, with the parent choice validated up front
+  (self-parent and descendant cycles raise `ValueError` before any change).
+  GUI: "Group topic (AI)" form on the tasks page → `_topic_group.html` in
+  `#organize-result` (checkbox list + new/existing parent radio), apply via
+  `POST /gui/tasks/organize/group` → `_tasks_oob.html` (validation errors
+  render inline in the OOB `#organize-result` slot).
 - Tasks form a single-parent tree of arbitrary depth (`Task.parent_id`, cycle
   checks in `core/tasks.py`); `completed_at` is auto-managed on status→done.
   One external key (e.g. a Jira issue) may be linked from many tasks; links

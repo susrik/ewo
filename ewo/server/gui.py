@@ -303,12 +303,66 @@ def organize_create(
 @router.post("/gui/tasks/organize/retitle", response_class=HTMLResponse)
 def organize_retitle(
     request: Request,
-    session: SessionDep,
     task_id: Annotated[int, Form()],
     title: Annotated[str, Form()],
+    session: SessionDep,
 ) -> HTMLResponse:
     tasks.update_task(session, task_id, title=title.strip())
     return _tasks_after_organize(request, session)
+
+
+@router.post("/gui/tasks/organize/topic", response_class=HTMLResponse)
+def organize_topic(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+    topic: Annotated[str, Form()],
+) -> HTMLResponse:
+    """Propose a parent/child grouping of open tasks related to a free-form topic."""
+    topic = topic.strip()
+    context: dict[str, object] = {"proposal": None, "error": None, "topic": topic}
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    elif not topic:
+        context["error"] = "Enter a topic first."
+    else:
+        try:
+            proposal, _tokens = task_organize.propose_topic_group(session, llm, topic)
+            if proposal is None:
+                context["error"] = f"No tasks found that clearly relate to “{topic}”."
+            else:
+                context["proposal"] = proposal
+                context["tasks_by_id"] = {t.id: t for t in tasks.list_tasks(session)}
+        except ValueError as exc:
+            context["error"] = str(exc)
+    return _render(request, "_topic_group.html", context)
+
+
+@router.post("/gui/tasks/organize/group", response_class=HTMLResponse)
+def organize_group(
+    request: Request,
+    session: SessionDep,
+    child_ids: Annotated[list[int] | None, Form()] = None,
+    parent_choice: Annotated[str, Form()] = "new",
+    parent_title: Annotated[str, Form()] = "",
+    parent_id: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Apply the confirmed grouping, then refresh the task list. A validation
+    error is shown inline in the (out-of-band) organize panel."""
+    error: str | None = None
+    try:
+        task_organize.apply_group(
+            session,
+            child_ids or [],
+            new_parent_title=(parent_title.strip() or None) if parent_choice == "new" else None,
+            existing_parent_id=_opt_int(parent_id) if parent_choice == "existing" else None,
+        )
+    except ValueError as exc:
+        error = str(exc)
+    context = _task_context(session)
+    context["organize_error"] = error
+    return _render(request, "_tasks_oob.html", context)
 
 
 @router.get("/gui/tasks/{task_id}", response_class=HTMLResponse)

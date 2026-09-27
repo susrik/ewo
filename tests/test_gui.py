@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -272,6 +273,90 @@ def test_tasks_organize_split_create_retitle(client: TestClient, session: Sessio
         "/gui/tasks/organize/retitle", data={"task_id": str(task["id"]), "title": "renamed"}
     )
     assert "renamed" in retitled.text
+
+
+def test_tasks_topic_group_flow(client: TestClient, session: Session) -> None:
+    # no llm key configured → the topic form is hidden, and the endpoint explains
+    assert "Group topic (AI)" not in client.get("/tasks").text
+    response = client.post("/gui/tasks/organize/topic", data={"topic": "website"})
+    assert "No LLM API key" in response.text
+
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+    assert "Group topic (AI)" in client.get("/tasks").text
+    blank = client.post("/gui/tasks/organize/topic", data={"topic": "  "})
+    assert "Enter a topic" in blank.text
+
+    # the proposal renders as a checkbox list with a parent choice
+    redesign = client.post("/api/tasks", json={"title": "redesign website"}).json()
+    copy = client.post("/api/tasks", json={"title": "write homepage copy"}).json()
+    client.post("/api/tasks", json={"title": "unrelated errand"})
+    from ewo.core.llm import FakeLLM
+
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            json.dumps(
+                {
+                    "task_ids": [redesign["id"], copy["id"]],
+                    "parent_title": "Website project",
+                    "existing_parent_id": None,
+                    "reason": "both about the site",
+                }
+            )
+        ]
+    )
+    proposal = client.post("/gui/tasks/organize/topic", data={"topic": "website"})
+    assert "redesign website" in proposal.text and "write homepage copy" in proposal.text
+    assert "unrelated errand" not in proposal.text
+    assert 'value="Website project"' in proposal.text
+
+    # no related tasks → inline note instead of a proposal
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            json.dumps(
+                {"task_ids": [], "parent_title": None, "existing_parent_id": None, "reason": ""}
+            )
+        ]
+    )
+    nothing = client.post("/gui/tasks/organize/topic", data={"topic": "quantum"})
+    assert "No tasks found" in nothing.text
+
+    # an LLM returning garbage surfaces as an inline error, not a 500
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    errored_propose = client.post("/gui/tasks/organize/topic", data={"topic": "website"})
+    assert "did not return valid topic grouping" in errored_propose.text
+
+    # applying with a new parent refreshes the task list and clears the panel
+    # (repeated child_ids fields; the vendored-httpx TestClient needs a raw body)
+    form = (
+        f"child_ids={redesign['id']}&child_ids={copy['id']}"
+        "&parent_choice=new&parent_title=Website+project&parent_id="
+    )
+    applied = client.post(
+        "/gui/tasks/organize/group",
+        content=form,
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert applied.status_code == 200
+    assert "Website project" in applied.text
+    assert 'id="organize-result" hx-swap-oob' in applied.text
+    all_tasks = client.get("/api/tasks").json()
+    parent = next(t for t in all_tasks if t["title"] == "Website project")
+    assert parent["source"] == "manual"
+    children = {t["title"] for t in all_tasks if t["parent_id"] == parent["id"]}
+    assert children == {"redesign website", "write homepage copy"}
+
+    # an existing parent inside the group is rejected inline, nothing changes
+    bad_form = (
+        f"child_ids={redesign['id']}&child_ids={copy['id']}"
+        f"&parent_choice=existing&parent_title=&parent_id={redesign['id']}"
+    )
+    errored = client.post(
+        "/gui/tasks/organize/group",
+        content=bad_form,
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert "part of the group" in errored.text
+    assert client.get(f"/api/tasks/{copy['id']}").json()["parent_id"] == parent["id"]
 
 
 # --- labels (tags) ---

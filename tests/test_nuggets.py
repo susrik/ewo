@@ -11,7 +11,7 @@ from ewo.core import nuggets, task_organize, tasks
 from ewo.core.llm import FakeLLM
 from ewo.core.nugget_match import suggest_matches
 from ewo.core.people import NotFoundError
-from ewo.db.models import Nugget, NuggetKind, NuggetStatus
+from ewo.db.models import Nugget, NuggetKind, NuggetStatus, TaskSource, TaskStatus
 
 
 def _nugget(
@@ -378,3 +378,150 @@ def test_apply_create(session: Session) -> None:
     assert task.title == "cluster topic"
     assert sorted(n.id for n in tasks.list_attached_nuggets(session, task.id)) == [a.id, b.id]
     assert nuggets.get_nugget(session, a.id).status == NuggetStatus.ATTACHED
+
+
+# --- topic grouping ---
+
+
+def _topic_group_response(
+    task_ids: list[int],
+    parent_title: str | None = None,
+    existing_parent_id: int | None = None,
+    reason: str = "related",
+) -> str:
+    return json.dumps(
+        {
+            "task_ids": task_ids,
+            "parent_title": parent_title,
+            "existing_parent_id": existing_parent_id,
+            "reason": reason,
+        }
+    )
+
+
+def test_propose_topic_group_validates(session: Session) -> None:
+    a = tasks.create_task(session, "redesign website")
+    b = tasks.create_task(session, "write homepage copy")
+    c = tasks.create_task(session, "fix landing page")
+    closed = tasks.create_task(session, "old website")
+    tasks.update_task(session, closed.id, status=TaskStatus.DONE)
+    llm = FakeLLM(
+        responses=[
+            _topic_group_response(
+                [a.id, b.id, c.id, closed.id, 9999, a.id],  # closed/unknown/dupe dropped
+                parent_title="ignored",  # both options set → existing wins
+                existing_parent_id=a.id,
+            )
+        ]
+    )
+    proposal, tokens = task_organize.propose_topic_group(session, llm, "website")
+    assert tokens == 10
+    assert proposal is not None
+    assert proposal.task_ids == [a.id, b.id, c.id]
+    assert proposal.existing_parent_id == a.id
+    assert proposal.parent_title is None
+    assert llm.calls[0]["smart"] is True
+
+
+def test_propose_topic_group_needs_two_tasks(session: Session) -> None:
+    only = tasks.create_task(session, "lonely website task")
+    llm = FakeLLM(responses=[_topic_group_response([only.id, 9999])])
+    assert task_organize.propose_topic_group(session, llm, "website")[0] is None
+
+
+def test_propose_topic_group_caps_at_twenty(session: Session) -> None:
+    ids = [tasks.create_task(session, f"topic task {i}").id for i in range(25)]
+    llm = FakeLLM(responses=[_topic_group_response(ids, parent_title="all topics")])
+    proposal, _ = task_organize.propose_topic_group(session, llm, "topic")
+    assert proposal is not None
+    assert len(proposal.task_ids) == 20
+    assert proposal.existing_parent_id is None
+    assert proposal.parent_title == "all topics"
+
+
+def test_propose_topic_group_bad_json(session: Session) -> None:
+    tasks.create_task(session, "a")
+    tasks.create_task(session, "b")
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid topic grouping"):
+        task_organize.propose_topic_group(session, llm, "x")
+
+
+def test_propose_topic_group_parent_outside_group(session: Session) -> None:
+    a = tasks.create_task(session, "a")
+    b = tasks.create_task(session, "b")
+    outsider = tasks.create_task(session, "outsider")
+    # an existing parent outside the proposed group is dropped, title kept
+    llm = FakeLLM(
+        responses=[
+            _topic_group_response(
+                [a.id, b.id], parent_title="new parent", existing_parent_id=outsider.id
+            )
+        ]
+    )
+    proposal, _ = task_organize.propose_topic_group(session, llm, "x")
+    assert proposal is not None
+    assert proposal.existing_parent_id is None
+    assert proposal.parent_title == "new parent"
+
+
+def test_apply_group_new_parent(session: Session) -> None:
+    a = tasks.create_task(session, "redesign site")
+    b = tasks.create_task(session, "write copy")
+    parent = task_organize.apply_group(session, [a.id, b.id], new_parent_title="Website")
+    assert parent.title == "Website" and parent.source == TaskSource.MANUAL
+    assert tasks.get_task(session, a.id).parent_id == parent.id
+    assert tasks.get_task(session, b.id).parent_id == parent.id
+
+
+def test_apply_group_existing_parent(session: Session) -> None:
+    parent = tasks.create_task(session, "website umbrella")
+    a = tasks.create_task(session, "part a")
+    b = tasks.create_task(session, "part b")
+    result = task_organize.apply_group(session, [a.id, b.id], existing_parent_id=parent.id)
+    assert result.id == parent.id
+    assert tasks.get_task(session, a.id).parent_id == parent.id
+    assert tasks.get_task(session, b.id).parent_id == parent.id
+
+
+def test_apply_group_requires_exactly_one_parent(session: Session) -> None:
+    a = tasks.create_task(session, "a")
+    b = tasks.create_task(session, "b")
+    with pytest.raises(ValueError, match="exactly one"):
+        task_organize.apply_group(
+            session, [a.id, b.id], new_parent_title="x", existing_parent_id=b.id
+        )
+    with pytest.raises(ValueError, match="choose a parent"):
+        task_organize.apply_group(session, [a.id, b.id])
+    with pytest.raises(ValueError, match="needs a title"):
+        task_organize.apply_group(session, [a.id, b.id], new_parent_title="  ")
+
+
+def test_apply_group_rejects_closed_or_missing_children(session: Session) -> None:
+    a = tasks.create_task(session, "a")
+    closed = tasks.create_task(session, "closed")
+    tasks.update_task(session, closed.id, status=TaskStatus.DONE)
+    with pytest.raises(ValueError, match="no open tasks selected"):
+        task_organize.apply_group(session, [], new_parent_title="x")
+    with pytest.raises(ValueError, match="no open tasks selected"):
+        task_organize.apply_group(session, [closed.id, 9999], new_parent_title="x")
+    # closed/unknown ids are dropped; the open one still groups
+    parent = task_organize.apply_group(session, [a.id, closed.id], new_parent_title="x")
+    assert tasks.get_task(session, a.id).parent_id == parent.id
+    assert tasks.get_task(session, closed.id).parent_id is None
+    with pytest.raises(ValueError, match="not an open task"):
+        task_organize.apply_group(session, [a.id], existing_parent_id=closed.id)
+
+
+def test_apply_group_cycle_fails_before_changes(session: Session) -> None:
+    child = tasks.create_task(session, "child")
+    parent = tasks.create_task(session, "parent", parent_id=child.id)
+    other = tasks.create_task(session, "other")
+    with pytest.raises(ValueError, match="descendant"):
+        task_organize.apply_group(session, [child.id, other.id], existing_parent_id=parent.id)
+    assert tasks.get_task(session, child.id).parent_id is None  # nothing reparented
+    assert tasks.get_task(session, other.id).parent_id is None
+
+    # the parent itself in the group is also rejected
+    with pytest.raises(ValueError, match="part of the group"):
+        task_organize.apply_group(session, [child.id, parent.id], existing_parent_id=parent.id)

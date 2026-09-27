@@ -29,6 +29,10 @@
         <button class="btn btn-sm" hx-post="/gui/tasks/organize" hx-target="#organize-result" hx-indicator="#organize-spinner" title="AI proposals: merge, split, create, retitle">
           Organize (AI) <span id="organize-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
         </button>
+        <form hx-post="/gui/tasks/organize/topic" hx-target="#organize-result" hx-indicator="#organize-spinner" hx-on::after-request="this.reset()" class="flex gap-1">
+          <input class="input input-bordered input-sm w-44" name="topic" placeholder="Group by topic…" required>
+          <button class="btn btn-sm" type="submit" title="Find tasks about a topic and group them under a parent">Group topic (AI)</button>
+        </form>
         {% endif %}
         <form hx-get="/gui/tasks" hx-target="#task-list" hx-trigger="change" class="flex flex-wrap gap-2">
           <select class="select select-bordered select-sm" name="status">
