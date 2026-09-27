@@ -22,6 +22,7 @@ from ewo.core import tags as tags_core
 from ewo.core.dashboard import build_dashboard
 from ewo.core.llm import LLMClient
 from ewo.core.notes import NotesReader
+from ewo.core.people import NotFoundError
 from ewo.core.whatnext import upcoming_deadlines, what_next
 from ewo.db.models import (
     JobRun,
@@ -210,6 +211,7 @@ def task_list(
 def create_task(
     request: Request,
     session: SessionDep,
+    config: ConfigDep,
     title: Annotated[str, Form()],
     priority: Annotated[str, Form()] = "normal",
     assignee_id: Annotated[str, Form()] = "",
@@ -231,7 +233,12 @@ def create_task(
     )
     if compact:
         return _render(request, "_task_added.html", {"task": task})
-    return task_list(request, session)
+    context = _task_context(session)
+    if config.llm.api_key:
+        # offer to find related existing tasks and group them with the new one
+        context["related_task"] = task
+        return _render(request, "_tasks_oob.html", context)
+    return _render(request, "_tasks.html", context)
 
 
 # --- task organization (AI) — declared before /gui/tasks/{task_id} so the
@@ -363,6 +370,61 @@ def organize_group(
     context = _task_context(session)
     context["organize_error"] = error
     return _render(request, "_tasks_oob.html", context)
+
+
+@router.post("/gui/tasks/organize/related", response_class=HTMLResponse)
+def organize_related(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+    task_id: Annotated[int, Form()],
+    answered: Annotated[str, Form()] = "",
+    question: Annotated[list[str] | None, Form()] = None,
+    answer: Annotated[list[str] | None, Form()] = None,
+) -> HTMLResponse:
+    """Two-step "find related tasks" flow for a freshly created task.
+
+    First POST (no ``answered`` field) asks the LLM for clarifying questions
+    and renders answer inputs; the questions round-trip in hidden form fields
+    (one Q&A round max, Q&A state is never persisted server-side). Resubmitting
+    with answers proposes a TopicGroupProposal rendered by the shared
+    _topic_group.html review; confirmation reuses /gui/tasks/organize/group.
+    """
+    if not answered:
+        context: dict[str, object] = {"error": None, "task": None, "questions": []}
+        if not config.llm.api_key:
+            context["error"] = "No LLM API key configured."
+        else:
+            try:
+                result, _tokens = task_organize.propose_related(session, llm, task_id)
+                if isinstance(result, task_organize.RelatedQuestions):
+                    context["task"] = tasks.get_task(session, task_id)
+                    context["questions"] = result.questions
+            except (NotFoundError, ValueError) as exc:
+                context["error"] = str(exc)
+        return _render(request, "_related_questions.html", context)
+    context = {"proposal": None, "error": None, "topic": ""}
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    else:
+        try:
+            task = tasks.get_task(session, task_id)
+            qa = [
+                (q.strip(), a.strip())
+                for q, a in zip(question or [], answer or [], strict=False)
+                if q.strip()
+            ]
+            result, _tokens = task_organize.propose_related(session, llm, task_id, qa=qa)
+            if result is None:
+                context["error"] = f"No tasks found that clearly relate to #{task.id} {task.title}."
+            elif isinstance(result, task_organize.TopicGroupProposal):
+                context["topic"] = f"#{task.id} {task.title}"
+                context["proposal"] = result
+                context["tasks_by_id"] = {t.id: t for t in tasks.list_tasks(session)}
+        except (NotFoundError, ValueError) as exc:
+            context["error"] = str(exc)
+    return _render(request, "_topic_group.html", context)
 
 
 @router.post("/gui/tasks/organize/split/propose", response_class=HTMLResponse)

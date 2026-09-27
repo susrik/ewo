@@ -448,6 +448,120 @@ def test_task_split_parts_flow(client: TestClient, session: Session) -> None:
     assert len(client.get("/api/tasks").json()) == count
 
 
+def test_related_grouping_flow(client: TestClient, session: Session) -> None:
+    related_url = "/gui/tasks/organize/related"
+
+    # no llm key configured: creating a task offers no banner, and the
+    # related endpoint explains instead of calling the LLM
+    created = client.post("/gui/tasks", data={"title": "no-key task"})
+    assert "Find related tasks (AI)?" not in created.text
+    no_key = client.post(related_url, data={"task_id": "1"})
+    assert "No LLM API key" in no_key.text
+
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+
+    # with a key, creating a task via the full form returns the list plus an
+    # out-of-band banner offering to find related tasks
+    dash = client.post("/api/tasks", json={"title": "redesign sla dashboard"}).json()
+    pipe = client.post("/api/tasks", json={"title": "fix sla data pipeline"}).json()
+    created = client.post("/gui/tasks", data={"title": "ix sla report overhaul"})
+    assert "Find related tasks (AI)?" in created.text
+    assert 'id="related-banner" hx-swap-oob' in created.text
+    new_task = next(
+        t for t in client.get("/api/tasks").json() if t["title"] == "ix sla report overhaul"
+    )
+
+    # an unknown task id surfaces as an inline error, not a 500
+    missing = client.post(related_url, data={"task_id": "9999"})
+    assert "task 9999 not found" in missing.text
+
+    # first POST: the LLM asks clarifying questions, rendered with answer
+    # inputs and the questions round-tripping in hidden fields
+    from ewo.core.llm import FakeLLM
+
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[json.dumps({"questions": ["Public dashboard?", "Which quarter?"]})]
+    )
+    questions = client.post(related_url, data={"task_id": str(new_task["id"])})
+    assert "Public dashboard?" in questions.text and "Which quarter?" in questions.text
+    assert 'name="question"' in questions.text and 'name="answer"' in questions.text
+    assert 'name="answered"' in questions.text
+
+    # an LLM returning garbage surfaces as an inline error, not a 500
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    errored = client.post(related_url, data={"task_id": str(new_task["id"])})
+    assert "did not return valid related questions" in errored.text
+
+    # resubmitting with answers proposes a topic grouping for review
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            json.dumps(
+                {
+                    "task_ids": [new_task["id"], dash["id"], pipe["id"]],
+                    "parent_title": "SLA reporting",
+                    "existing_parent_id": None,
+                    "reason": "same report work",
+                }
+            )
+        ]
+    )
+    form = (
+        f"task_id={new_task['id']}&answered=1"
+        "&question=Public+dashboard%3F&answer=yes"
+        "&question=Which+quarter%3F&answer=Q4"
+    )
+    review = client.post(
+        related_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert 'value="SLA reporting"' in review.text
+    assert "redesign sla dashboard" in review.text and "fix sla data pipeline" in review.text
+    assert 'name="child_ids"' in review.text
+
+    # no related tasks -> inline note instead of a proposal
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            json.dumps(
+                {"task_ids": [], "parent_title": None, "existing_parent_id": None, "reason": ""}
+            )
+        ]
+    )
+    nothing = client.post(
+        related_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert "No tasks found" in nothing.text
+
+    # the answered path with no API key explains; a bad LLM reply errors inline
+    saved_key = client.app.state.config.llm.api_key  # type: ignore[attr-defined]
+    client.app.state.config.llm.api_key = ""  # type: ignore[attr-defined]
+    no_key_qa = client.post(
+        related_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert "No LLM API key" in no_key_qa.text
+    client.app.state.config.llm.api_key = saved_key  # type: ignore[attr-defined]
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    bad_qa = client.post(
+        related_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert "did not return valid related grouping" in bad_qa.text
+
+    # applying the confirmed grouping reuses the shared group route
+    apply_form = (
+        f"child_ids={new_task['id']}&child_ids={dash['id']}&child_ids={pipe['id']}"
+        "&parent_choice=new&parent_title=SLA+reporting&parent_id="
+    )
+    applied = client.post(
+        "/gui/tasks/organize/group",
+        content=apply_form,
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert applied.status_code == 200
+    assert "SLA reporting" in applied.text
+    all_tasks = client.get("/api/tasks").json()
+    parent = next(t for t in all_tasks if t["title"] == "SLA reporting")
+    children = {t["title"] for t in all_tasks if t["parent_id"] == parent["id"]}
+    assert children == {"ix sla report overhaul", "redesign sla dashboard", "fix sla data pipeline"}
+
+
 # --- labels (tags) ---
 
 

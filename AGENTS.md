@@ -92,6 +92,17 @@ rationale.
   applies only the checked parts via `apply_split_parts`, and returns
   `_split_applied.html` (fresh `#task-list` + OOB `#task-{id}-detail`, errors
   inline). These split routes are declared before `/gui/tasks/{task_id}`.
+  Related grouping for a just-created task follows the same stateless pattern:
+  `create_task` (non-compact, llm_enabled) returns `_tasks_oob.html` with
+  `_related_banner.html` in the OOB `#related-banner` slot; "Find related"
+  posts `task_id` to `/gui/tasks/organize/related`, which calls
+  `propose_related` — first POST (no `answered` field) renders
+  `_related_questions.html` (answer inputs + hidden `question` fields),
+  resubmitting with `answered=1` pairs hidden `question`/`answer` lists into
+  the `qa` argument and renders `_topic_group.html` in `#organize-result`,
+  whose form applies via `POST /gui/tasks/organize/group` (one Q&A round max,
+  nothing persisted until confirmed). The related route is also declared
+  before `/gui/tasks/{task_id}`.
 - Tasks form a single-parent tree of arbitrary depth (`Task.parent_id`, cycle
   checks in `core/tasks.py`); `completed_at` is auto-managed on status→done.
   One external key (e.g. a Jira issue) may be linked from many tasks; links

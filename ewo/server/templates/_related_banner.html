@@ -1,0 +1,8 @@
+<div class="alert alert-info shadow-sm mb-2 flex flex-wrap items-center gap-2">
+  <span>Task #{{ related_task.id }} {{ related_task.title }} created. Find related tasks (AI)?</span>
+  <form hx-post="/gui/tasks/organize/related" hx-target="#organize-result" class="flex gap-1 items-center">
+    <input type="hidden" name="task_id" value="{{ related_task.id }}">
+    <button class="btn btn-xs btn-primary" type="submit">Find related</button>
+    <button class="btn btn-xs btn-ghost" type="button" onclick="document.getElementById('related-banner').innerHTML=''">Dismiss</button>
+  </form>
+</div>
