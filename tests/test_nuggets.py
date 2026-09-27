@@ -658,3 +658,100 @@ def test_apply_split_parts_rejects_unknown_mode(session: Session) -> None:
         task_organize.apply_split_parts(session, source.id, [], "sideways")  # type: ignore[arg-type]
     with pytest.raises(NotFoundError):
         task_organize.apply_split_parts(session, 9999, [], "children")
+
+
+# --- related grouping (new task -> clarifying questions -> grouping) ---
+
+
+def _related_questions_response(*questions: str) -> str:
+    return json.dumps({"questions": list(questions)})
+
+
+def test_propose_related_questions_path(session: Session) -> None:
+    new = tasks.create_task(session, "overhaul the ix sla report")
+    llm = FakeLLM(
+        responses=[
+            _related_questions_response(
+                "  Is this about the public dashboard?  ",
+                "Does it block OAM acceptance?",
+                "Is this about the public dashboard?",  # duplicate -> dropped
+                "   ",  # blank -> dropped
+                "Which quarter does it target?",
+                "Who consumes it?",  # beyond the cap of 3 -> dropped
+            )
+        ]
+    )
+    result, tokens = task_organize.propose_related(session, llm, new.id)
+    assert tokens == 10
+    assert isinstance(result, task_organize.RelatedQuestions)
+    assert result.questions == [
+        "Is this about the public dashboard?",
+        "Does it block OAM acceptance?",
+        "Which quarter does it target?",
+    ]
+    assert llm.calls[0]["smart"] is True
+    assert f"- #{new.id} [{new.status.value}] overhaul the ix sla report" in str(
+        llm.calls[0]["prompt"]
+    )
+
+
+def test_propose_related_qa_path_returns_topic_group(session: Session) -> None:
+    new = tasks.create_task(session, "ix sla report overhaul")
+    a = tasks.create_task(session, "redesign sla dashboard")
+    b = tasks.create_task(session, "fix sla data pipeline")
+    closed = tasks.create_task(session, "old sla thing")
+    tasks.update_task(session, closed.id, status=TaskStatus.DONE)
+    llm = FakeLLM(
+        responses=[
+            _topic_group_response(
+                [new.id, a.id, b.id, closed.id, 9999, a.id],  # closed/unknown/dupe dropped
+                parent_title="ignored",  # both options set -> existing wins
+                existing_parent_id=new.id,
+                reason="same report work",
+            )
+        ]
+    )
+    result, tokens = task_organize.propose_related(
+        session, llm, new.id, qa=[("Public or internal dashboard?", "Public")]
+    )
+    assert tokens == 10
+    assert isinstance(result, task_organize.TopicGroupProposal)
+    assert result.task_ids == [new.id, a.id, b.id]
+    assert result.existing_parent_id == new.id
+    assert result.parent_title is None
+    assert result.reason == "same report work"
+    assert llm.calls[0]["smart"] is True
+    prompt = str(llm.calls[0]["prompt"])
+    assert "Q: Public or internal dashboard?\nA: Public" in prompt
+    assert f"- #{a.id} [{a.status.value}] redesign sla dashboard" in prompt
+
+
+def test_propose_related_qa_prompt_forbids_questions(session: Session) -> None:
+    new = tasks.create_task(session, "new thing")
+    other = tasks.create_task(session, "other thing")
+    llm = FakeLLM(responses=[_topic_group_response([new.id, other.id], parent_title="g")])
+    task_organize.propose_related(session, llm, new.id, qa=[("Scope?", "all of it")])
+    assert "Do not ask questions" in str(llm.calls[0]["prompt"])
+    assert "Do not ask any questions" in str(llm.calls[0]["system"])
+
+
+def test_propose_related_qa_path_needs_two_tasks(session: Session) -> None:
+    new = tasks.create_task(session, "lonely new task")
+    llm = FakeLLM(responses=[_topic_group_response([new.id, 9999])])
+    result, _ = task_organize.propose_related(session, llm, new.id, qa=[("q", "a")])
+    assert result is None
+
+
+def test_propose_related_bad_json(session: Session) -> None:
+    new = tasks.create_task(session, "a task")
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid related questions"):
+        task_organize.propose_related(session, llm, new.id)
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid related grouping"):
+        task_organize.propose_related(session, llm, new.id, qa=[("q", "a")])
+
+
+def test_propose_related_missing_task(session: Session) -> None:
+    with pytest.raises(NotFoundError):
+        task_organize.propose_related(session, FakeLLM(), 9999)

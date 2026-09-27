@@ -21,6 +21,7 @@ from ewo.db.models import Nugget, NuggetStatus, Task, TaskSource, TaskStatus
 _MAX_PROPOSALS = 10
 _MAX_GROUP_TASKS = 20
 _MAX_SPLIT_PARTS = 8
+_MAX_RELATED_QUESTIONS = 3
 
 _SYSTEM = """You tidy an engineering manager's task list. Tasks collect "nuggets" (work items
 extracted from notes). Propose only clearly useful changes, at most 10, fewest possible:
@@ -64,6 +65,30 @@ Respond with JSON only, matching:
   use only the listed nugget ids, and use each nugget in at most one part.
 """
 
+_RELATED_QUESTIONS_SYSTEM = """You organize an engineering manager's task list. The user just
+created the new task below and wants to find existing tasks related to it so
+they can be grouped. Ask a few short clarifying questions (at most 3) whose
+answers would sharpen which existing tasks relate and how they should group.
+
+Respond with JSON only, matching:
+{"questions": [str]}
+"""
+
+_RELATED_GROUP_SYSTEM = """You organize an engineering manager's task list. The user just
+created the new task below and answered clarifying questions about it. Find the
+open tasks related to the new task and propose grouping them under a parent
+task. Do not ask any questions — reply with the grouping JSON only.
+
+Respond with JSON only, matching:
+{"task_ids": [int], "parent_title": str or null, "existing_parent_id": int or null, "reason": str}
+
+- task_ids: ids of the listed tasks that clearly relate to the new task.
+- Choose exactly one parent option: "existing_parent_id" to reuse one of the
+  related tasks (the new task itself may be the parent) as the parent, or
+  "parent_title" to create a new parent task. Null the other.
+- If fewer than 2 tasks relate to the new task, return {"task_ids": [], ...}.
+"""
+
 
 class Proposal(BaseModel):
     """One organization suggestion; the GUI renders it with confirm/dismiss."""
@@ -88,6 +113,12 @@ class TopicGroupProposal(BaseModel):
     parent_title: str | None = None
     existing_parent_id: int | None = None
     reason: str = ""
+
+
+class RelatedQuestions(BaseModel):
+    """Clarifying questions about a new task, asked before proposing a grouping."""
+
+    questions: list[str] = Field(default_factory=list)
 
 
 class SplitPart(BaseModel):
@@ -199,6 +230,46 @@ def propose_split_parts(
     return _validate_split_parts(parsed, attached), tokens
 
 
+def propose_related(
+    session: Session,
+    llm: LLMClient,
+    task_id: int,
+    qa: list[tuple[str, str]] | None = None,
+) -> tuple[RelatedQuestions | TopicGroupProposal | None, int]:
+    """Find open tasks related to the freshly created *task_id* and group them.
+
+    With ``qa=None`` this returns clarifying ``RelatedQuestions`` for the user
+    (one Q&A round max). With ``qa`` — (question, answer) pairs from that
+    round — it returns a validated ``TopicGroupProposal`` instead (None when
+    fewer than two open tasks relate); asking questions is forbidden on that
+    second call. Returns (result, tokens).
+    """
+    task = tasks.get_task(session, task_id)
+    if qa is None:
+        prompt = f"New task:\n{_task_digest(task)}"
+        questions, tokens = _parse_llm_json(
+            llm, prompt, _RELATED_QUESTIONS_SYSTEM, RelatedQuestions, "related questions"
+        )
+        return _validate_related_questions(questions), tokens
+    open_tasks = list(
+        session.scalars(
+            select(Task).where(Task.status.not_in([TaskStatus.DONE, TaskStatus.DROPPED]))
+        )
+    )
+    task_lines = "\n".join(_task_digest(t) for t in open_tasks) or "- (none)"
+    qa_lines = "\n".join(f"Q: {q}\nA: {a}" for q, a in qa) or "- (none)"
+    prompt = (
+        f"New task:\n{_task_digest(task)}\n\n"
+        f"Clarifying questions and answers:\n{qa_lines}\n\n"
+        f"Open tasks:\n{task_lines}\n\n"
+        "Do not ask questions; reply with the grouping JSON only."
+    )
+    parsed, tokens = _parse_llm_json(
+        llm, prompt, _RELATED_GROUP_SYSTEM, TopicGroupProposal, "related grouping"
+    )
+    return _validate_topic_group(parsed, open_tasks), tokens
+
+
 def _validate(
     proposals: list[Proposal], open_tasks: list[Task], new_nuggets: list[Nugget]
 ) -> list[Proposal]:
@@ -270,6 +341,20 @@ def _validate_split_parts(
         used_nuggets.update(nugget_ids)
         valid.append(part)
     proposal.parts = valid
+    return proposal
+
+
+def _validate_related_questions(proposal: RelatedQuestions) -> RelatedQuestions:
+    """Keep at most 3 unique non-empty questions (one Q&A round max)."""
+    seen: set[str] = set()
+    valid: list[str] = []
+    for question in proposal.questions:
+        question = question.strip()
+        if not question or question in seen:
+            continue
+        seen.add(question)
+        valid.append(question)
+    proposal.questions = valid[:_MAX_RELATED_QUESTIONS]
     return proposal
 
 
