@@ -13,7 +13,8 @@ ewo.json
 *.swp
 .vscode
 
-# tmp/misc until ready
+# tmp/misc or local
+data
 secrets.txt
 docker-compose.yml
 .dockerignore
