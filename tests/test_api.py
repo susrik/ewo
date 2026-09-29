@@ -116,6 +116,56 @@ def test_task_filters(client: TestClient) -> None:
     assert [t["id"] for t in client.get("/api/tasks", params={"tag": "t"}).json()] == [open_id]
 
 
+def test_task_multi_tag_filter(client: TestClient) -> None:
+    only_x = _create_task(client, title="only x", tags=["x"])
+    only_y = _create_task(client, title="only y", tags=["y"])
+    both = _create_task(client, title="both", tags=["x", "y"])
+
+    any_ids = {
+        t["id"] for t in client.get("/api/tasks", params=[("tags", "x"), ("tags", "y")]).json()
+    }
+    assert any_ids == {only_x, only_y, both}
+
+    all_response = client.get(
+        "/api/tasks", params=[("tags", "x"), ("tags", "y"), ("tag_match", "all")]
+    )
+    assert [t["id"] for t in all_response.json()] == [both]
+
+    # the legacy single-tag param merges into the list
+    merged = client.get(
+        "/api/tasks", params=[("tag", "x"), ("tags", "y"), ("tag_match", "all")]
+    ).json()
+    assert [t["id"] for t in merged] == [both]
+
+    assert client.get("/api/tasks", params={"tags": ["nope"]}).json() == []
+    assert client.get("/api/tasks", params={"tag_match": "bogus"}).status_code == 422
+
+
+def test_tag_endpoints(client: TestClient) -> None:
+    task_id = _create_task(client, title="tagged", tags=["one", "two"])
+
+    listed = client.get("/api/tags").json()
+    assert [t["name"] for t in listed] == ["one", "two"]
+    assert all(t["description"] is None for t in listed)
+
+    tag_id = next(t["id"] for t in listed if t["name"] == "one")
+    patched = client.patch(f"/api/tags/{tag_id}", json={"description": "the first"})
+    assert patched.json() == {"id": tag_id, "name": "one", "description": "the first"}
+
+    renamed = client.patch(f"/api/tags/{tag_id}", json={"name": " Uno "})
+    assert renamed.json()["name"] == "uno"
+
+    # collision with another tag's normalized name -> 400
+    assert client.patch(f"/api/tags/{tag_id}", json={"name": "TWO"}).status_code == 400
+    # missing tag -> 404
+    assert client.patch("/api/tags/999", json={"name": "x"}).status_code == 404
+    assert client.delete("/api/tags/999").status_code == 404
+
+    assert client.delete(f"/api/tags/{tag_id}").json() == {"detail": "deleted"}
+    remaining = client.get(f"/api/tasks/{task_id}").json()["tags"]
+    assert [t["name"] for t in remaining] == ["two"]
+
+
 def test_task_404s(client: TestClient) -> None:
     assert client.patch("/api/tasks/999", json={"status": "done"}).status_code == 404
     assert client.delete("/api/tasks/999").status_code == 404

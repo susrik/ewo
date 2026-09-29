@@ -134,7 +134,7 @@ def register_tools(server: MCPServer[Any], api: EwoApi) -> None:
     @server.tool()
     def ewo_run_job(name: str, full: bool = False) -> dict[str, Any]:
         """Run a named ewo job on demand (jira_sync, daily_report, what_next, notes_scan,
-        nuggets_match).
+        nuggets_match, housekeeping).
 
         ``full=True`` makes notes_scan rescan the whole window instead of only changed notes.
         """

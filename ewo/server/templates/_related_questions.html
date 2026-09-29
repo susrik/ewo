@@ -1,0 +1,29 @@
+{% if error %}
+<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ error }}</span></div>
+{% elif task %}
+<div class="border rounded p-3 mt-2 proposal">
+  <p class="text-sm mb-2">
+    Clarifying questions for #{{ task.id }} {{ task.title }} — answer any to sharpen
+    the grouping, then resubmit (one round only; blanks are allowed):
+  </p>
+  <form hx-post="/gui/tasks/organize/related" hx-target="#organize-result" class="grid gap-2">
+    <input type="hidden" name="task_id" value="{{ task.id }}">
+    <input type="hidden" name="answered" value="1">
+    <div class="grid gap-1">
+      {% for q in questions %}
+      <input type="hidden" name="question" value="{{ q }}">
+      <label class="label justify-start gap-2 py-0.5">
+        <span class="label-text">{{ q }}</span>
+        <input class="input input-bordered input-sm flex-1" name="answer">
+      </label>
+      {% endfor %}
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-xs btn-primary" type="submit">Find related tasks</button>
+      <button class="btn btn-xs btn-ghost" type="button" onclick="this.closest('.proposal').remove()">Dismiss</button>
+    </div>
+  </form>
+</div>
+{% else %}
+<p class="opacity-60 text-sm mt-2">No clarifying questions proposed.</p>
+{% endif %}

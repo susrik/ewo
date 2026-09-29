@@ -1,0 +1,38 @@
+{% if error %}
+<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ error }}</span></div>
+{% elif not proposal %}
+<p class="opacity-60 text-sm mt-2">No related tasks found.</p>
+{% else %}
+<div class="border rounded p-3 mt-2 proposal">
+  <p class="text-sm mb-2">
+    Tasks related to “{{ topic }}”{% if proposal.reason %}<span class="opacity-60"> — {{ proposal.reason }}</span>{% endif %}
+  </p>
+  <form hx-post="/gui/tasks/organize/group" hx-target="#task-list" class="grid gap-2">
+    <div class="grid gap-1">
+      {% for task_id in proposal.task_ids %}
+      <label class="label cursor-pointer justify-start gap-2 py-0.5">
+        <input type="checkbox" class="checkbox checkbox-sm" name="child_ids" value="{{ task_id }}" checked>
+        <span class="label-text">#{{ task_id }} {{ tasks_by_id[task_id].title }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="flex flex-wrap items-center gap-3 text-sm">
+      <label class="label cursor-pointer gap-1">
+        <input type="radio" class="radio radio-sm" name="parent_choice" value="new" {% if not proposal.existing_parent_id %}checked{% endif %}> new parent:
+      </label>
+      <input class="input input-bordered input-sm flex-1 min-w-48" name="parent_title"
+             value="{{ proposal.parent_title or topic }}" placeholder="Parent task title">
+      <label class="label cursor-pointer gap-1">
+        <input type="radio" class="radio radio-sm" name="parent_choice" value="existing" {% if proposal.existing_parent_id %}checked{% endif %}> existing:
+      </label>
+      <select class="select select-bordered select-sm" name="parent_id">
+        {% for task_id in proposal.task_ids %}
+        <option value="{{ task_id }}" {% if proposal.existing_parent_id == task_id %}selected{% endif %}>#{{ task_id }} {{ tasks_by_id[task_id].title }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-xs btn-primary" type="submit">Apply</button>
+      <button class="btn btn-xs btn-ghost" type="button" onclick="this.closest('.proposal').remove()">Dismiss</button>
+    </div>
+  </form>
+</div>
+{% endif %}

@@ -1,10 +1,12 @@
 """Suggest candidate tasks for unreviewed nuggets (the ``nuggets_match`` job).
 
 Two passes. First a deterministic one: a nugget whose normalised summary
-matches an already-attached nugget inherits that nugget's task — this routes
-items repeated across several notes files to the same task for free. Then an
-LLM pass (cheap tier) matches the rest against the open tasks, and may say
-"no task fits" (suggestion cleared → attaching creates a new task).
+matches an already-attached nugget — exactly, or near-identically by word-set
+overlap — inherits that nugget's task; this routes items repeated across
+several notes files to the same task for free. Then an LLM pass (cheap tier)
+matches the rest against the open tasks, each listed with a sample of what is
+already attached to it, and may say "no task fits" (suggestion cleared →
+attaching creates a new task).
 
 Suggestions land in ``Nugget.suggested_task_id``; nothing is attached until a
 human confirms in the inbox.
@@ -24,13 +26,17 @@ from ewo.db.models import Nugget, NuggetStatus, Task, TaskStatus
 
 _CHUNK = 30
 _MAX_TASKS = 150
+_MAX_ATTACHED = 3  # attached summaries shown per task in the prompt
+_ATTACHED_CHARS = 80  # max chars per attached summary
+_JACCARD_MIN = 0.6  # word-set overlap needed for a deterministic suggestion
 
 _SYSTEM = """You match inbox items extracted from an engineering manager's notes to their
 existing tracked tasks. For each item decide which single task it is an update for or a
 detail of — or null when no existing task fits (a genuinely new piece of work).
 
 Match on meaning, not keywords: the same work is often phrased differently across notes.
-Only match when you are confident the item belongs to the task.
+"attached:" lines after a task show what already lives on that task; an item similar to
+them belongs on the same task. Only match when you are confident the item belongs to the task.
 
 Respond with JSON only, matching: {"matches": [{"item": int, "task": int|null}]}
 Cover every item exactly once; task must be one of the listed task ids or null.
@@ -75,22 +81,75 @@ def _open_tasks(session: Session) -> list[Task]:
     )
 
 
+def _word_set(text: str) -> set[str]:
+    return set(norm_words(text).split())
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
 def _suggest_from_attached(session: Session, candidates: list[Nugget]) -> dict[int, int]:
-    """nugget id → task id, reusing earlier attach decisions on identical text."""
+    """nugget id → task id, reusing earlier attach decisions.
+
+    Exact normalised-text duplicates inherit directly; near-identical summaries
+    (Jaccard word-set overlap ≥ ``_JACCARD_MIN``) inherit the highest-scoring
+    task, with ties going to the lowest task id.
+    """
     attached = session.scalars(
         select(Nugget).where(Nugget.status == NuggetStatus.ATTACHED, Nugget.task_id.is_not(None))
     )
     task_ids = {task.id for task in _open_tasks(session)}
     by_words: dict[str, int] = {}
+    word_sets: list[tuple[set[str], int]] = []
     for other in attached:
         if other.task_id in task_ids:
             by_words.setdefault(norm_words(other.summary), other.task_id)
+            word_sets.append((_word_set(other.summary), other.task_id))
     suggestions: dict[int, int] = {}
     for nugget in candidates:
         task_id = by_words.get(norm_words(nugget.summary))
         if task_id is not None:
             suggestions[nugget.id] = task_id
+            continue
+        words = _word_set(nugget.summary)
+        best: tuple[float, int] | None = None
+        for other_words, other_task_id in word_sets:
+            score = _jaccard(words, other_words)
+            if score >= _JACCARD_MIN and (
+                best is None or score > best[0] or (score == best[0] and other_task_id < best[1])
+            ):
+                best = (score, other_task_id)
+        if best is not None:
+            suggestions[nugget.id] = best[1]
     return suggestions
+
+
+def _attached_summaries(session: Session, tasks: list[Task]) -> dict[int, list[str]]:
+    """task id → up to ``_MAX_ATTACHED`` attached-nugget summaries (each
+    truncated to ``_ATTACHED_CHARS``) — the "attached:" context for the prompt."""
+    ids = [task.id for task in tasks]
+    by_task: dict[int, list[str]] = {task_id: [] for task_id in ids}
+    rows = session.scalars(
+        select(Nugget)
+        .where(Nugget.status == NuggetStatus.ATTACHED, Nugget.task_id.in_(ids))
+        .order_by(Nugget.id)
+    )
+    for nugget in rows:
+        if nugget.task_id in by_task:
+            bucket = by_task[nugget.task_id]
+            if len(bucket) < _MAX_ATTACHED:
+                bucket.append(nugget.summary[:_ATTACHED_CHARS])
+    return by_task
+
+
+def _task_line(task: Task, summaries: list[str]) -> str:
+    line = f"- #{task.id} {task.title}"
+    if summaries:
+        line += f" — attached: {'; '.join(summaries)}"
+    return line
 
 
 def _strip_fence(text: str) -> str:
@@ -102,10 +161,15 @@ def _strip_fence(text: str) -> str:
 
 
 def _match_chunk(
-    llm: LLMClient, candidates: list[Nugget], tasks: list[Task]
+    llm: LLMClient,
+    candidates: list[Nugget],
+    tasks: list[Task],
+    attached: dict[int, list[str]],
 ) -> tuple[_MatchResult, int]:
     """One LLM call (plus one retry on invalid JSON). Returns (result, tokens)."""
-    task_lines = "\n".join(f"- #{task.id} {task.title}" for task in tasks) or "- (none)"
+    task_lines = (
+        "\n".join(_task_line(task, attached.get(task.id, [])) for task in tasks) or "- (none)"
+    )
     item_lines = "\n".join(
         f"- #{nugget.id} [{nugget.kind.value}] {nugget.summary} (note: {nugget.path})"
         for nugget in candidates
@@ -151,10 +215,11 @@ def suggest_matches(
     tasks = _open_tasks(session)
     llm_suggestions: dict[int, int | None] = {}
     if tasks:
+        attached = _attached_summaries(session, tasks)
         for start in range(0, len(remaining), _CHUNK):
             chunk = remaining[start : start + _CHUNK]
             try:
-                result, tokens = _match_chunk(llm, chunk, tasks)
+                result, tokens = _match_chunk(llm, chunk, tasks, attached)
             except ValueError as exc:
                 summary.errors.append(str(exc))
                 continue

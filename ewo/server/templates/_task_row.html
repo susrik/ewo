@@ -3,7 +3,7 @@
     {% set depth = depth | default(0) %}
     {% if depth > 0 %}<span class="opacity-50" style="padding-left: {{ (depth - 1) * 1.25 }}rem">↳</span>{% endif %}
     <a class="link link-hover font-medium" hx-get="/gui/tasks/{{ task.id }}/detail" hx-target="#task-{{ task.id }}-detail" hx-swap="innerHTML" href="#">{{ task.title }}</a>
-    {% for tag in task.tags %}<span class="badge badge-ghost badge-sm">{{ tag.name }}</span>{% endfor %}
+    {% for tag in task.tags %}<span class="badge badge-ghost badge-sm" {% if tag.description %}title="{{ tag.description }}"{% endif %}>{{ tag.name }}</span>{% endfor %}
     {% for link in task.external_links %}
       {% if link.url %}<a class="link link-primary text-xs" href="{{ link.url }}">{{ link.external_key }}</a>
       {% else %}<span class="text-xs opacity-60 font-mono" title="{{ link.system }}">{{ link.external_key }}</span>{% endif %}

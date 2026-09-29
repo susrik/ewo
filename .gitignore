@@ -9,5 +9,12 @@ build/
 dist/
 ewo.json
 .env
-secrets.txt
+
 *.swp
+.vscode
+
+# tmp/misc or local
+data
+secrets.txt
+docker-compose.yml
+.dockerignore

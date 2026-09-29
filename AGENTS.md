@@ -73,11 +73,62 @@ rationale.
   suggested task per new nugget; the inbox groups by it. `core/task_organize.py`
   computes stateless merge/split/create/retitle proposals behind the
   tasks-page "Organize (AI)" button — nothing is persisted until confirmed.
+  The same module powers topic grouping: `propose_topic_group(session, llm,
+  topic)` finds open tasks related to a free-form topic (validated to open
+  ids, capped at 20, needs ≥2) and `apply_group` re-parents the confirmed
+  set under exactly one parent — a new task (`source=manual`) or an existing
+  one — via `tasks.update_task`, with the parent choice validated up front
+  (self-parent and descendant cycles raise `ValueError` before any change).
+  GUI: "Group topic (AI)" form on the tasks page → `_topic_group.html` in
+  `#organize-result` (checkbox list + new/existing parent radio), apply via
+  `POST /gui/tasks/organize/group` → `_tasks_oob.html` (validation errors
+  render inline in the OOB `#organize-result` slot). Splitting one task from
+  free-form instructions is the same stateless pattern on the detail panel:
+  "Split (AI)" form (only when `llm_enabled`, passed via `_detail_context`) →
+  `POST /gui/tasks/organize/split/propose` → `propose_split_parts` →
+  `_split_proposal.html` in `#task-{id}-detail` (checkbox per part + hidden
+  `proposal` JSON/`task_id`/`mode`); `POST /gui/tasks/organize/split/apply`
+  re-validates the hidden proposal against the currently attached nuggets,
+  applies only the checked parts via `apply_split_parts`, and returns
+  `_split_applied.html` (fresh `#task-list` + OOB `#task-{id}-detail`, errors
+  inline). These split routes are declared before `/gui/tasks/{task_id}`.
+  Related grouping for a just-created task follows the same stateless pattern:
+  `create_task` (non-compact, llm_enabled) returns `_tasks_oob.html` with
+  `_related_banner.html` in the OOB `#related-banner` slot; "Find related"
+  posts `task_id` to `/gui/tasks/organize/related`, which calls
+  `propose_related` — first POST (no `answered` field) renders
+  `_related_questions.html` (answer inputs + hidden `question` fields),
+  resubmitting with `answered=1` pairs hidden `question`/`answer` lists into
+  the `qa` argument and renders `_topic_group.html` in `#organize-result`,
+  whose form applies via `POST /gui/tasks/organize/group` (one Q&A round max,
+  nothing persisted until confirmed). The related route is also declared
+  before `/gui/tasks/{task_id}`.
 - Tasks form a single-parent tree of arbitrary depth (`Task.parent_id`, cycle
   checks in `core/tasks.py`); `completed_at` is auto-managed on status→done.
   One external key (e.g. a Jira issue) may be linked from many tasks; links
   are unique per task (`uq_external_links_key_task`).
-- GUI: pages `/`, `/tasks`, `/inbox`, `/people`, `/jobs` extend
+- Labels = tags. `Tag` has an optional `description`; service layer lives in
+  `core/tags.py` (`normalize_name` = strip+lower, CRUD, `descendant_ids`,
+  `add_tags_to_descendants`). Inheritance: `create_task` unions the parent's
+  tags into a new child (additive). In the GUI, adding a tag to a task that
+  has descendants returns `_task_row_oob.html` with a `_tag_sync_confirm.html`
+  banner in `#tag-sync-banner`; confirming posts to
+  `POST /gui/tasks/{id}/propagate-tags` → `add_tags_to_descendants`
+  (append-only, returns count of descendants changed). Tag removal is never
+  propagated. Never propagate via `update_task(..., tags=...)` — it replaces
+  the tag set wholesale. The `housekeeping` job (`core/housekeeping.py`)
+  sweeps the whole task tree roots-first and additively applies missing
+  parent labels to descendants (never removes); registered as `housekeeping`
+  in `jobs/builtin.py`. The `housekeeping` job (`core/housekeeping.py`)
+  sweeps the whole task tree roots-first and additively applies missing
+  parent labels to descendants (never removes); registered as `housekeeping`
+  in `jobs/builtin.py`.
+- Multi-tag filter: `list_tasks(tags=[...], tag_match="any"|"all")`; ANY is
+  the default (OR), ALL chains one `Task.tags.any(...)` per name. The legacy
+  single `tag` kwarg/query param is merged into the `tags` list. The tasks
+  page exposes this as a label checkbox dropdown plus ANY/ALL radios
+  ("Show tasks with: any selected label / all selected labels").
+- GUI: pages `/`, `/tasks`, `/inbox`, `/people`, `/jobs`, `/labels` extend
   `_layout.html`; fragments are `_*.html` and are what htmx swaps in. A
   mutation returns the fragment it belongs to (row, item, list).
 - Reports are generated as markdown and published to the dedicated GitHub

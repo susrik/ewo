@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
-from ewo.core import nuggets, one_on_ones, people, reports, tasks, whatnext
+from ewo.core import nuggets, one_on_ones, people, reports, tags, tasks, whatnext
 from ewo.core.llm import LLMClient
 from ewo.core.notes import NotesReader
 from ewo.core.people import NotFoundError
@@ -89,6 +89,8 @@ def list_tasks(
     status: str | None = None,
     assignee_id: int | None = None,
     tag: str | None = None,
+    tags: Annotated[list[str] | None, Query()] = None,
+    tag_match: Literal["any", "all"] = "any",
     include_closed: bool = False,
 ) -> object:
     parsed_status = TaskStatus(status) if status else None
@@ -97,6 +99,8 @@ def list_tasks(
         status=parsed_status,
         assignee_id=assignee_id,
         tag=tag,
+        tags=tags,
+        tag_match=tag_match,
         include_closed=include_closed,
     )
 
@@ -133,6 +137,33 @@ def delete_task(task_id: int, session: SessionDep) -> object:
 @router.post("/notes", response_model=schemas.NoteOut, status_code=201)
 def add_note(body: schemas.NoteCreate, session: SessionDep) -> object:
     return tasks.add_note(session, **body.model_dump())
+
+
+# --- tags (labels) ---
+
+
+@router.get("/tags", response_model=list[schemas.TagOut])
+def list_tags(session: SessionDep) -> object:
+    return tags.list_tags(session)
+
+
+@router.patch("/tags/{tag_id}", response_model=schemas.TagOut)
+def update_tag(tag_id: int, body: schemas.TagUpdate, session: SessionDep) -> object:
+    try:
+        return tags.update_tag(session, tag_id, **body.model_dump(exclude_unset=True))
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/tags/{tag_id}", response_model=schemas.MessageOut)
+def delete_tag(tag_id: int, session: SessionDep) -> object:
+    try:
+        tags.delete_tag(session, tag_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return schemas.MessageOut(detail="deleted")
 
 
 # --- task external links / nuggets ---

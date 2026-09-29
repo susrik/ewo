@@ -7,11 +7,18 @@ import json
 import pytest
 from sqlalchemy.orm import Session
 
-from ewo.core import nuggets, task_organize, tasks
+from ewo.core import nuggets, people, task_organize, tasks
 from ewo.core.llm import FakeLLM
 from ewo.core.nugget_match import suggest_matches
 from ewo.core.people import NotFoundError
-from ewo.db.models import Nugget, NuggetKind, NuggetStatus
+from ewo.db.models import (
+    Nugget,
+    NuggetKind,
+    NuggetStatus,
+    TaskPriority,
+    TaskSource,
+    TaskStatus,
+)
 
 
 def _nugget(
@@ -190,6 +197,75 @@ def test_suggest_no_candidates(session: Session) -> None:
     assert summary.reviewed == 0
 
 
+def test_suggest_deterministic_near_duplicate(session: Session) -> None:
+    """A near-identical summary (Jaccard ≥ 0.6) inherits the task — no LLM call."""
+    task = tasks.create_task(session, "the topic")
+    attached = _nugget(session, "fix the IX SLA report", path="a/one.md")
+    nuggets.attach_nugget(session, attached.id, task_id=task.id)
+    similar = _nugget(session, "fix the broken IX SLA report", path="b/two.md")
+    llm = FakeLLM()
+
+    summary = suggest_matches(session, llm)
+    assert summary.reviewed == 1 and summary.suggested == 1
+    assert llm.calls == []  # deterministic pass covered it
+    assert nuggets.get_nugget(session, similar.id).suggested_task_id == task.id
+
+
+def test_suggest_deterministic_dissimilar_falls_through(session: Session) -> None:
+    """Below the Jaccard threshold the nugget goes to the LLM instead of inheriting."""
+    task = tasks.create_task(session, "the topic")
+    attached = _nugget(session, "fix the IX SLA report", path="a/one.md")
+    nuggets.attach_nugget(session, attached.id, task_id=task.id)
+    other = _nugget(session, "report the new hiring plan", path="b/two.md")
+    symbols = _nugget(session, "!!! *** !!!", path="c/three.md")  # no word tokens at all
+    llm = FakeLLM(responses=[_match_response((other.id, None), (symbols.id, None))])
+
+    summary = suggest_matches(session, llm)
+    assert summary.suggested == 0 and summary.no_match == 2
+    assert llm.calls  # nothing matched deterministically
+    assert nuggets.get_nugget(session, other.id).suggested_task_id is None
+
+
+def test_suggest_prompt_shows_attached_summaries(session: Session) -> None:
+    """Task lines show what already lives on each task (≤80 chars per summary)."""
+    topic = tasks.create_task(session, "deploy pipeline work")
+    plain = tasks.create_task(session, "untouched topic")
+    long_summary = "redo the IX dashboard " + "x" * 100
+    for summary_text, path in [("fix the IX SLA report", "a.md"), (long_summary, "b.md")]:
+        nugget = _nugget(session, summary_text, path=path)
+        nuggets.attach_nugget(session, nugget.id, task_id=topic.id)
+    new = _nugget(session, "completely unrelated zzz qqq", path="c.md")
+    llm = FakeLLM(responses=[_match_response((new.id, None))])
+
+    suggest_matches(session, llm)
+    assert len(llm.calls) == 1
+    prompt = str(llm.calls[0]["prompt"])
+    expected = (
+        f"- #{topic.id} deploy pipeline work — attached: fix the IX SLA report; {long_summary[:80]}"
+    )
+    assert expected in prompt.splitlines()
+    assert "x" * 59 not in prompt  # the long summary was truncated
+    assert f"- #{plain.id} untouched topic" in prompt.splitlines()  # no "attached:" suffix
+
+
+def test_suggest_prompt_caps_attached_summaries(session: Session) -> None:
+    """At most three attached summaries per task reach the prompt."""
+    topic = tasks.create_task(session, "busy topic")
+    for i in range(4):
+        nugget = _nugget(session, f"attached detail number {i} zzz", path=f"m/{i}.md")
+        nuggets.attach_nugget(session, nugget.id, task_id=topic.id)
+    new = _nugget(session, "totally different qqq", path="new.md")
+    llm = FakeLLM(responses=[_match_response((new.id, None))])
+
+    suggest_matches(session, llm)
+    prompt = str(llm.calls[0]["prompt"])
+    topic_line = next(line for line in prompt.splitlines() if line.startswith(f"- #{topic.id}"))
+    assert topic_line == (
+        f"- #{topic.id} busy topic — attached: attached detail number 0 zzz; "
+        "attached detail number 1 zzz; attached detail number 2 zzz"
+    )
+
+
 # --- task_organize ---
 
 
@@ -309,3 +385,373 @@ def test_apply_create(session: Session) -> None:
     assert task.title == "cluster topic"
     assert sorted(n.id for n in tasks.list_attached_nuggets(session, task.id)) == [a.id, b.id]
     assert nuggets.get_nugget(session, a.id).status == NuggetStatus.ATTACHED
+
+
+# --- topic grouping ---
+
+
+def _topic_group_response(
+    task_ids: list[int],
+    parent_title: str | None = None,
+    existing_parent_id: int | None = None,
+    reason: str = "related",
+) -> str:
+    return json.dumps(
+        {
+            "task_ids": task_ids,
+            "parent_title": parent_title,
+            "existing_parent_id": existing_parent_id,
+            "reason": reason,
+        }
+    )
+
+
+def test_propose_topic_group_validates(session: Session) -> None:
+    a = tasks.create_task(session, "redesign website")
+    b = tasks.create_task(session, "write homepage copy")
+    c = tasks.create_task(session, "fix landing page")
+    closed = tasks.create_task(session, "old website")
+    tasks.update_task(session, closed.id, status=TaskStatus.DONE)
+    llm = FakeLLM(
+        responses=[
+            _topic_group_response(
+                [a.id, b.id, c.id, closed.id, 9999, a.id],  # closed/unknown/dupe dropped
+                parent_title="ignored",  # both options set → existing wins
+                existing_parent_id=a.id,
+            )
+        ]
+    )
+    proposal, tokens = task_organize.propose_topic_group(session, llm, "website")
+    assert tokens == 10
+    assert proposal is not None
+    assert proposal.task_ids == [a.id, b.id, c.id]
+    assert proposal.existing_parent_id == a.id
+    assert proposal.parent_title is None
+    assert llm.calls[0]["smart"] is True
+
+
+def test_propose_topic_group_needs_two_tasks(session: Session) -> None:
+    only = tasks.create_task(session, "lonely website task")
+    llm = FakeLLM(responses=[_topic_group_response([only.id, 9999])])
+    assert task_organize.propose_topic_group(session, llm, "website")[0] is None
+
+
+def test_propose_topic_group_caps_at_twenty(session: Session) -> None:
+    ids = [tasks.create_task(session, f"topic task {i}").id for i in range(25)]
+    llm = FakeLLM(responses=[_topic_group_response(ids, parent_title="all topics")])
+    proposal, _ = task_organize.propose_topic_group(session, llm, "topic")
+    assert proposal is not None
+    assert len(proposal.task_ids) == 20
+    assert proposal.existing_parent_id is None
+    assert proposal.parent_title == "all topics"
+
+
+def test_propose_topic_group_bad_json(session: Session) -> None:
+    tasks.create_task(session, "a")
+    tasks.create_task(session, "b")
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid topic grouping"):
+        task_organize.propose_topic_group(session, llm, "x")
+
+
+def test_propose_topic_group_parent_outside_group(session: Session) -> None:
+    a = tasks.create_task(session, "a")
+    b = tasks.create_task(session, "b")
+    outsider = tasks.create_task(session, "outsider")
+    # an existing parent outside the proposed group is dropped, title kept
+    llm = FakeLLM(
+        responses=[
+            _topic_group_response(
+                [a.id, b.id], parent_title="new parent", existing_parent_id=outsider.id
+            )
+        ]
+    )
+    proposal, _ = task_organize.propose_topic_group(session, llm, "x")
+    assert proposal is not None
+    assert proposal.existing_parent_id is None
+    assert proposal.parent_title == "new parent"
+
+
+def test_apply_group_new_parent(session: Session) -> None:
+    a = tasks.create_task(session, "redesign site")
+    b = tasks.create_task(session, "write copy")
+    parent = task_organize.apply_group(session, [a.id, b.id], new_parent_title="Website")
+    assert parent.title == "Website" and parent.source == TaskSource.MANUAL
+    assert tasks.get_task(session, a.id).parent_id == parent.id
+    assert tasks.get_task(session, b.id).parent_id == parent.id
+
+
+def test_apply_group_existing_parent(session: Session) -> None:
+    parent = tasks.create_task(session, "website umbrella")
+    a = tasks.create_task(session, "part a")
+    b = tasks.create_task(session, "part b")
+    result = task_organize.apply_group(session, [a.id, b.id], existing_parent_id=parent.id)
+    assert result.id == parent.id
+    assert tasks.get_task(session, a.id).parent_id == parent.id
+    assert tasks.get_task(session, b.id).parent_id == parent.id
+
+
+def test_apply_group_requires_exactly_one_parent(session: Session) -> None:
+    a = tasks.create_task(session, "a")
+    b = tasks.create_task(session, "b")
+    with pytest.raises(ValueError, match="exactly one"):
+        task_organize.apply_group(
+            session, [a.id, b.id], new_parent_title="x", existing_parent_id=b.id
+        )
+    with pytest.raises(ValueError, match="choose a parent"):
+        task_organize.apply_group(session, [a.id, b.id])
+    with pytest.raises(ValueError, match="needs a title"):
+        task_organize.apply_group(session, [a.id, b.id], new_parent_title="  ")
+
+
+def test_apply_group_rejects_closed_or_missing_children(session: Session) -> None:
+    a = tasks.create_task(session, "a")
+    closed = tasks.create_task(session, "closed")
+    tasks.update_task(session, closed.id, status=TaskStatus.DONE)
+    with pytest.raises(ValueError, match="no open tasks selected"):
+        task_organize.apply_group(session, [], new_parent_title="x")
+    with pytest.raises(ValueError, match="no open tasks selected"):
+        task_organize.apply_group(session, [closed.id, 9999], new_parent_title="x")
+    # closed/unknown ids are dropped; the open one still groups
+    parent = task_organize.apply_group(session, [a.id, closed.id], new_parent_title="x")
+    assert tasks.get_task(session, a.id).parent_id == parent.id
+    assert tasks.get_task(session, closed.id).parent_id is None
+    with pytest.raises(ValueError, match="not an open task"):
+        task_organize.apply_group(session, [a.id], existing_parent_id=closed.id)
+
+
+def test_apply_group_cycle_fails_before_changes(session: Session) -> None:
+    child = tasks.create_task(session, "child")
+    parent = tasks.create_task(session, "parent", parent_id=child.id)
+    other = tasks.create_task(session, "other")
+    with pytest.raises(ValueError, match="descendant"):
+        task_organize.apply_group(session, [child.id, other.id], existing_parent_id=parent.id)
+    assert tasks.get_task(session, child.id).parent_id is None  # nothing reparented
+    assert tasks.get_task(session, other.id).parent_id is None
+
+    # the parent itself in the group is also rejected
+    with pytest.raises(ValueError, match="part of the group"):
+        task_organize.apply_group(session, [child.id, parent.id], existing_parent_id=parent.id)
+
+
+# --- split parts (free-form split, both modes) ---
+
+
+def _split_parts_response(mode: str, *parts: dict[str, object]) -> str:
+    return json.dumps({"mode": mode, "parts": list(parts)})
+
+
+def test_propose_split_parts_validates(session: Session) -> None:
+    source = tasks.create_task(session, "mixed bag")
+    keep_a = _nugget(session, "bit a", path="a.md", line=1)
+    keep_b = _nugget(session, "bit b", path="b.md", line=2)
+    other = _nugget(session, "elsewhere", path="c.md", line=3)
+    nuggets.attach_nugget(session, keep_a.id, task_id=source.id)
+    nuggets.attach_nugget(session, keep_b.id, task_id=source.id)
+    elsewhere = tasks.create_task(session, "elsewhere")
+    nuggets.attach_nugget(session, other.id, task_id=elsewhere.id)
+    llm = FakeLLM(
+        responses=[
+            _split_parts_response(
+                "children",
+                {"title": "part one", "nugget_ids": [keep_a.id, keep_a.id], "reason": "a"},
+                {"title": " part two ", "nugget_ids": [keep_b.id], "reason": "b"},
+                {"title": "part one", "nugget_ids": []},  # duplicate title -> dropped
+                {"title": "   ", "nugget_ids": []},  # blank title -> dropped
+                {"title": "bad attach", "nugget_ids": [other.id]},  # attached elsewhere
+                {"title": "bad unknown", "nugget_ids": [9999]},  # unknown id
+                {"title": "overlap", "nugget_ids": [keep_a.id]},  # already used
+            )
+        ]
+    )
+    proposal, tokens = task_organize.propose_split_parts(session, llm, source.id, "break it up")
+    assert tokens == 10
+    assert proposal.mode == "children"
+    assert [(p.title, p.nugget_ids) for p in proposal.parts] == [
+        ("part one", [keep_a.id]),
+        ("part two", [keep_b.id]),
+    ]
+    assert llm.calls[0]["smart"] is True
+    prompt = str(llm.calls[0]["prompt"])
+    assert f"Source task: #{source.id} [{source.status.value}] mixed bag" in prompt
+    assert "Instructions: break it up" in prompt
+
+
+def test_propose_split_parts_caps_at_eight(session: Session) -> None:
+    source = tasks.create_task(session, "big task")
+    parts = [{"title": f"part {i}", "nugget_ids": []} for i in range(10)]
+    llm = FakeLLM(responses=[_split_parts_response("siblings", *parts)])
+    proposal, _ = task_organize.propose_split_parts(session, llm, source.id, "split")
+    assert proposal.mode == "siblings"
+    assert [p.title for p in proposal.parts] == [f"part {i}" for i in range(8)]
+    prompt = str(llm.calls[0]["prompt"])
+    assert "Attached nuggets:\n- (none)" in prompt
+
+
+def test_propose_split_parts_bad_json(session: Session) -> None:
+    source = tasks.create_task(session, "a task")
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid split parts"):
+        task_organize.propose_split_parts(session, llm, source.id, "split it")
+
+
+def test_propose_split_parts_missing_task(session: Session) -> None:
+    with pytest.raises(NotFoundError):
+        task_organize.propose_split_parts(session, FakeLLM(), 9999, "split it")
+
+
+def test_apply_split_parts_children(session: Session) -> None:
+    anna = people.create_person(session, "Anna")
+    source = tasks.create_task(
+        session, "mixed bag", priority=TaskPriority.HIGH, assignee_id=anna.id
+    )
+    keep = _nugget(session, "stays", path="a.md", line=1)
+    move_a = _nugget(session, "to part a", path="b.md", line=2)
+    move_b = _nugget(session, "to part b", path="c.md", line=3)
+    for item in (keep, move_a, move_b):
+        nuggets.attach_nugget(session, item.id, task_id=source.id)
+
+    created = task_organize.apply_split_parts(
+        session,
+        source.id,
+        [
+            task_organize.SplitPart(title="part a", nugget_ids=[move_a.id]),
+            task_organize.SplitPart(title="part b", nugget_ids=[move_b.id]),
+        ],
+        "children",
+    )
+    assert [t.title for t in created] == ["part a", "part b"]
+    for new_task in created:
+        assert new_task.parent_id == source.id
+        assert new_task.priority == TaskPriority.HIGH
+        assert new_task.source == source.source
+        assert new_task.assignee_id == anna.id
+    assert [n.id for n in tasks.list_attached_nuggets(session, created[0].id)] == [move_a.id]
+    assert [n.id for n in tasks.list_attached_nuggets(session, created[1].id)] == [move_b.id]
+    assert [n.id for n in tasks.list_attached_nuggets(session, source.id)] == [keep.id]
+    # the citation link follows the moved nugget
+    citation = tasks.find_link(session, "notes", f"b.md:2:{move_a.id}")
+    assert citation is not None and citation.task_id == created[0].id
+
+
+def test_apply_split_parts_siblings(session: Session) -> None:
+    parent = tasks.create_task(session, "umbrella")
+    source = tasks.create_task(session, "mixed bag", parent_id=parent.id)
+    move = _nugget(session, "to sibling", path="a.md", line=1)
+    nuggets.attach_nugget(session, move.id, task_id=source.id)
+
+    created = task_organize.apply_split_parts(
+        session,
+        source.id,
+        [task_organize.SplitPart(title="sib", nugget_ids=[move.id])],
+        "siblings",
+    )
+    assert [t.parent_id for t in created] == [parent.id]
+    assert created[0].priority == source.priority and created[0].source == source.source
+    assert [n.id for n in tasks.list_attached_nuggets(session, created[0].id)] == [move.id]
+    assert tasks.list_attached_nuggets(session, source.id) == []
+
+
+def test_apply_split_parts_rejects_unknown_mode(session: Session) -> None:
+    source = tasks.create_task(session, "source")
+    with pytest.raises(ValueError, match="unknown split mode"):
+        task_organize.apply_split_parts(session, source.id, [], "sideways")  # type: ignore[arg-type]
+    with pytest.raises(NotFoundError):
+        task_organize.apply_split_parts(session, 9999, [], "children")
+
+
+# --- related grouping (new task -> clarifying questions -> grouping) ---
+
+
+def _related_questions_response(*questions: str) -> str:
+    return json.dumps({"questions": list(questions)})
+
+
+def test_propose_related_questions_path(session: Session) -> None:
+    new = tasks.create_task(session, "overhaul the ix sla report")
+    llm = FakeLLM(
+        responses=[
+            _related_questions_response(
+                "  Is this about the public dashboard?  ",
+                "Does it block OAM acceptance?",
+                "Is this about the public dashboard?",  # duplicate -> dropped
+                "   ",  # blank -> dropped
+                "Which quarter does it target?",
+                "Who consumes it?",  # beyond the cap of 3 -> dropped
+            )
+        ]
+    )
+    result, tokens = task_organize.propose_related(session, llm, new.id)
+    assert tokens == 10
+    assert isinstance(result, task_organize.RelatedQuestions)
+    assert result.questions == [
+        "Is this about the public dashboard?",
+        "Does it block OAM acceptance?",
+        "Which quarter does it target?",
+    ]
+    assert llm.calls[0]["smart"] is True
+    assert f"- #{new.id} [{new.status.value}] overhaul the ix sla report" in str(
+        llm.calls[0]["prompt"]
+    )
+
+
+def test_propose_related_qa_path_returns_topic_group(session: Session) -> None:
+    new = tasks.create_task(session, "ix sla report overhaul")
+    a = tasks.create_task(session, "redesign sla dashboard")
+    b = tasks.create_task(session, "fix sla data pipeline")
+    closed = tasks.create_task(session, "old sla thing")
+    tasks.update_task(session, closed.id, status=TaskStatus.DONE)
+    llm = FakeLLM(
+        responses=[
+            _topic_group_response(
+                [new.id, a.id, b.id, closed.id, 9999, a.id],  # closed/unknown/dupe dropped
+                parent_title="ignored",  # both options set -> existing wins
+                existing_parent_id=new.id,
+                reason="same report work",
+            )
+        ]
+    )
+    result, tokens = task_organize.propose_related(
+        session, llm, new.id, qa=[("Public or internal dashboard?", "Public")]
+    )
+    assert tokens == 10
+    assert isinstance(result, task_organize.TopicGroupProposal)
+    assert result.task_ids == [new.id, a.id, b.id]
+    assert result.existing_parent_id == new.id
+    assert result.parent_title is None
+    assert result.reason == "same report work"
+    assert llm.calls[0]["smart"] is True
+    prompt = str(llm.calls[0]["prompt"])
+    assert "Q: Public or internal dashboard?\nA: Public" in prompt
+    assert f"- #{a.id} [{a.status.value}] redesign sla dashboard" in prompt
+
+
+def test_propose_related_qa_prompt_forbids_questions(session: Session) -> None:
+    new = tasks.create_task(session, "new thing")
+    other = tasks.create_task(session, "other thing")
+    llm = FakeLLM(responses=[_topic_group_response([new.id, other.id], parent_title="g")])
+    task_organize.propose_related(session, llm, new.id, qa=[("Scope?", "all of it")])
+    assert "Do not ask questions" in str(llm.calls[0]["prompt"])
+    assert "Do not ask any questions" in str(llm.calls[0]["system"])
+
+
+def test_propose_related_qa_path_needs_two_tasks(session: Session) -> None:
+    new = tasks.create_task(session, "lonely new task")
+    llm = FakeLLM(responses=[_topic_group_response([new.id, 9999])])
+    result, _ = task_organize.propose_related(session, llm, new.id, qa=[("q", "a")])
+    assert result is None
+
+
+def test_propose_related_bad_json(session: Session) -> None:
+    new = tasks.create_task(session, "a task")
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid related questions"):
+        task_organize.propose_related(session, llm, new.id)
+    llm = FakeLLM(responses=["nope"])
+    with pytest.raises(ValueError, match="did not return valid related grouping"):
+        task_organize.propose_related(session, llm, new.id, qa=[("q", "a")])
+
+
+def test_propose_related_missing_task(session: Session) -> None:
+    with pytest.raises(NotFoundError):
+        task_organize.propose_related(session, FakeLLM(), 9999)

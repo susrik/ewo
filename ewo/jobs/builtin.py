@@ -7,6 +7,7 @@
                  successful scan into the inbox (``full=true`` rescans the
                  window), then suggest candidate tasks for the new nuggets
 - nuggets_match: (re)compute suggested tasks for unreviewed nuggets
+- housekeeping:  data-integrity sweep (additive parent-label propagation)
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from ewo.core import reports
+from ewo.core.housekeeping import run_housekeeping
 from ewo.core.llm import LLMClient
 from ewo.core.note_extract import last_successful_scan, scan_notes
 from ewo.core.nugget_match import suggest_matches
@@ -100,3 +102,8 @@ def nuggets_match(context: JobContext) -> str:
     summary = suggest_matches(context.session, context.llm)
     context.add_tokens(summary.tokens)
     return summary.as_text()
+
+
+@registry.register("housekeeping")
+def housekeeping(context: JobContext) -> str:
+    return run_housekeeping(context.session).as_text()

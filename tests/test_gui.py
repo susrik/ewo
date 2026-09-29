@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import urllib.parse
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -272,6 +274,387 @@ def test_tasks_organize_split_create_retitle(client: TestClient, session: Sessio
         "/gui/tasks/organize/retitle", data={"task_id": str(task["id"]), "title": "renamed"}
     )
     assert "renamed" in retitled.text
+
+
+def test_tasks_topic_group_flow(client: TestClient, session: Session) -> None:
+    # no llm key configured → the topic form is hidden, and the endpoint explains
+    assert "Group topic (AI)" not in client.get("/tasks").text
+    response = client.post("/gui/tasks/organize/topic", data={"topic": "website"})
+    assert "No LLM API key" in response.text
+
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+    assert "Group topic (AI)" in client.get("/tasks").text
+    blank = client.post("/gui/tasks/organize/topic", data={"topic": "  "})
+    assert "Enter a topic" in blank.text
+
+    # the proposal renders as a checkbox list with a parent choice
+    redesign = client.post("/api/tasks", json={"title": "redesign website"}).json()
+    copy = client.post("/api/tasks", json={"title": "write homepage copy"}).json()
+    client.post("/api/tasks", json={"title": "unrelated errand"})
+    from ewo.core.llm import FakeLLM
+
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            json.dumps(
+                {
+                    "task_ids": [redesign["id"], copy["id"]],
+                    "parent_title": "Website project",
+                    "existing_parent_id": None,
+                    "reason": "both about the site",
+                }
+            )
+        ]
+    )
+    proposal = client.post("/gui/tasks/organize/topic", data={"topic": "website"})
+    assert "redesign website" in proposal.text and "write homepage copy" in proposal.text
+    assert "unrelated errand" not in proposal.text
+    assert 'value="Website project"' in proposal.text
+
+    # no related tasks → inline note instead of a proposal
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            json.dumps(
+                {"task_ids": [], "parent_title": None, "existing_parent_id": None, "reason": ""}
+            )
+        ]
+    )
+    nothing = client.post("/gui/tasks/organize/topic", data={"topic": "quantum"})
+    assert "No tasks found" in nothing.text
+
+    # an LLM returning garbage surfaces as an inline error, not a 500
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    errored_propose = client.post("/gui/tasks/organize/topic", data={"topic": "website"})
+    assert "did not return valid topic grouping" in errored_propose.text
+
+    # applying with a new parent refreshes the task list and clears the panel
+    # (repeated child_ids fields; the vendored-httpx TestClient needs a raw body)
+    form = (
+        f"child_ids={redesign['id']}&child_ids={copy['id']}"
+        "&parent_choice=new&parent_title=Website+project&parent_id="
+    )
+    applied = client.post(
+        "/gui/tasks/organize/group",
+        content=form,
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert applied.status_code == 200
+    assert "Website project" in applied.text
+    assert 'id="organize-result" hx-swap-oob' in applied.text
+    all_tasks = client.get("/api/tasks").json()
+    parent = next(t for t in all_tasks if t["title"] == "Website project")
+    assert parent["source"] == "manual"
+    children = {t["title"] for t in all_tasks if t["parent_id"] == parent["id"]}
+    assert children == {"redesign website", "write homepage copy"}
+
+    # an existing parent inside the group is rejected inline, nothing changes
+    bad_form = (
+        f"child_ids={redesign['id']}&child_ids={copy['id']}"
+        f"&parent_choice=existing&parent_title=&parent_id={redesign['id']}"
+    )
+    errored = client.post(
+        "/gui/tasks/organize/group",
+        content=bad_form,
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert "part of the group" in errored.text
+    assert client.get(f"/api/tasks/{copy['id']}").json()["parent_id"] == parent["id"]
+
+
+def test_task_split_parts_flow(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "big mixed task"}).json()
+    propose_url = "/gui/tasks/organize/split/propose"
+    apply_url = "/gui/tasks/organize/split/apply"
+
+    # no llm key configured: the detail form is hidden, and the endpoint explains
+    assert "Split (AI)" not in client.get(f"/gui/tasks/{task['id']}/detail").text
+    no_key = client.post(
+        propose_url, data={"task_id": str(task["id"]), "instructions": "break it up"}
+    )
+    assert "No LLM API key" in no_key.text
+
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+    assert "Split (AI)" in client.get(f"/gui/tasks/{task['id']}/detail").text
+    blank = client.post(propose_url, data={"task_id": str(task["id"]), "instructions": "  "})
+    assert "Enter split instructions" in blank.text
+
+    first = _item(session, "part one")
+    second = _item(session, "part two", "ai/y.md")
+    client.post(f"/api/nuggets/{first}/attach", json={"task_id": task["id"]})
+    client.post(f"/api/nuggets/{second}/attach", json={"task_id": task["id"]})
+
+    # the proposal renders as a checkbox list with hidden proposal JSON + mode
+    from ewo.core.llm import FakeLLM
+
+    proposal_json = json.dumps(
+        {
+            "mode": "children",
+            "parts": [
+                {"title": "half a", "nugget_ids": [first], "reason": "one side"},
+                {"title": "half b", "nugget_ids": [second], "reason": "other side"},
+            ],
+        }
+    )
+    client.app.state.llm = FakeLLM(responses=[proposal_json])  # type: ignore[attr-defined]
+    proposed = client.post(
+        propose_url, data={"task_id": str(task["id"]), "instructions": "break it up"}
+    )
+    assert "half a" in proposed.text and "half b" in proposed.text
+    assert 'name="proposal"' in proposed.text and 'value="children"' in proposed.text
+    assert 'name="selected"' in proposed.text
+
+    # an LLM returning garbage surfaces as an inline error, not a 500
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    errored = client.post(propose_url, data={"task_id": str(task["id"]), "instructions": "again"})
+    assert "did not return valid split parts" in errored.text
+
+    # applying with only the first part checked refreshes list + detail (OOB)
+    form = (
+        f"task_id={task['id']}&mode=children"
+        f"&proposal={urllib.parse.quote(proposal_json)}&selected=0"
+    )
+    applied = client.post(
+        apply_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert applied.status_code == 200
+    assert "half a" in applied.text and "half b" not in applied.text
+    assert f'id="task-{task["id"]}-detail" hx-swap-oob' in applied.text
+    all_tasks = client.get("/api/tasks").json()
+    [child] = [t for t in all_tasks if t["title"] == "half a"]
+    assert child["parent_id"] == task["id"]
+    assert client.get(f"/api/tasks/{child['id']}/nuggets").json()[0]["id"] == first
+    # the unchecked part was not created and its nugget stayed on the source
+    [remaining] = client.get(f"/api/tasks/{task['id']}/nuggets").json()
+    assert remaining["id"] == second
+
+    # a mode that contradicts the hidden proposal is rejected, nothing changes
+    count = len(all_tasks)
+    bad_mode = (
+        f"task_id={task['id']}&mode=siblings"
+        f"&proposal={urllib.parse.quote(proposal_json)}&selected=0"
+    )
+    mismatch = client.post(
+        apply_url, content=bad_mode, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert "does not match" in mismatch.text
+    assert len(client.get("/api/tasks").json()) == count
+
+    # nothing selected -> inline error, no new tasks
+    no_selection = client.post(
+        apply_url,
+        content=f"task_id={task['id']}&mode=children&proposal={urllib.parse.quote(proposal_json)}",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert "no split parts selected" in no_selection.text
+    assert len(client.get("/api/tasks").json()) == count
+
+
+def test_related_grouping_flow(client: TestClient, session: Session) -> None:
+    related_url = "/gui/tasks/organize/related"
+
+    # no llm key configured: creating a task offers no banner, and the
+    # related endpoint explains instead of calling the LLM
+    created = client.post("/gui/tasks", data={"title": "no-key task"})
+    assert "Find related tasks (AI)?" not in created.text
+    no_key = client.post(related_url, data={"task_id": "1"})
+    assert "No LLM API key" in no_key.text
+
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+
+    # with a key, creating a task via the full form returns the list plus an
+    # out-of-band banner offering to find related tasks
+    dash = client.post("/api/tasks", json={"title": "redesign sla dashboard"}).json()
+    pipe = client.post("/api/tasks", json={"title": "fix sla data pipeline"}).json()
+    created = client.post("/gui/tasks", data={"title": "ix sla report overhaul"})
+    assert "Find related tasks (AI)?" in created.text
+    assert 'id="related-banner" hx-swap-oob' in created.text
+    new_task = next(
+        t for t in client.get("/api/tasks").json() if t["title"] == "ix sla report overhaul"
+    )
+
+    # an unknown task id surfaces as an inline error, not a 500
+    missing = client.post(related_url, data={"task_id": "9999"})
+    assert "task 9999 not found" in missing.text
+
+    # first POST: the LLM asks clarifying questions, rendered with answer
+    # inputs and the questions round-tripping in hidden fields
+    from ewo.core.llm import FakeLLM
+
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[json.dumps({"questions": ["Public dashboard?", "Which quarter?"]})]
+    )
+    questions = client.post(related_url, data={"task_id": str(new_task["id"])})
+    assert "Public dashboard?" in questions.text and "Which quarter?" in questions.text
+    assert 'name="question"' in questions.text and 'name="answer"' in questions.text
+    assert 'name="answered"' in questions.text
+
+    # an LLM returning garbage surfaces as an inline error, not a 500
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    errored = client.post(related_url, data={"task_id": str(new_task["id"])})
+    assert "did not return valid related questions" in errored.text
+
+    # resubmitting with answers proposes a topic grouping for review
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            json.dumps(
+                {
+                    "task_ids": [new_task["id"], dash["id"], pipe["id"]],
+                    "parent_title": "SLA reporting",
+                    "existing_parent_id": None,
+                    "reason": "same report work",
+                }
+            )
+        ]
+    )
+    form = (
+        f"task_id={new_task['id']}&answered=1"
+        "&question=Public+dashboard%3F&answer=yes"
+        "&question=Which+quarter%3F&answer=Q4"
+    )
+    review = client.post(
+        related_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert 'value="SLA reporting"' in review.text
+    assert "redesign sla dashboard" in review.text and "fix sla data pipeline" in review.text
+    assert 'name="child_ids"' in review.text
+
+    # no related tasks -> inline note instead of a proposal
+    client.app.state.llm = FakeLLM(  # type: ignore[attr-defined]
+        responses=[
+            json.dumps(
+                {"task_ids": [], "parent_title": None, "existing_parent_id": None, "reason": ""}
+            )
+        ]
+    )
+    nothing = client.post(
+        related_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert "No tasks found" in nothing.text
+
+    # the answered path with no API key explains; a bad LLM reply errors inline
+    saved_key = client.app.state.config.llm.api_key  # type: ignore[attr-defined]
+    client.app.state.config.llm.api_key = ""  # type: ignore[attr-defined]
+    no_key_qa = client.post(
+        related_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert "No LLM API key" in no_key_qa.text
+    client.app.state.config.llm.api_key = saved_key  # type: ignore[attr-defined]
+    client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
+    bad_qa = client.post(
+        related_url, content=form, headers={"content-type": "application/x-www-form-urlencoded"}
+    )
+    assert "did not return valid related grouping" in bad_qa.text
+
+    # applying the confirmed grouping reuses the shared group route
+    apply_form = (
+        f"child_ids={new_task['id']}&child_ids={dash['id']}&child_ids={pipe['id']}"
+        "&parent_choice=new&parent_title=SLA+reporting&parent_id="
+    )
+    applied = client.post(
+        "/gui/tasks/organize/group",
+        content=apply_form,
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert applied.status_code == 200
+    assert "SLA reporting" in applied.text
+    all_tasks = client.get("/api/tasks").json()
+    parent = next(t for t in all_tasks if t["title"] == "SLA reporting")
+    children = {t["title"] for t in all_tasks if t["parent_id"] == parent["id"]}
+    assert children == {"ix sla report overhaul", "redesign sla dashboard", "fix sla data pipeline"}
+
+
+# --- labels (tags) ---
+
+
+def test_labels_page_crud(client: TestClient) -> None:
+    page = client.get("/labels")
+    assert page.status_code == 200 and "No labels yet" in page.text
+
+    created = client.post("/gui/labels", data={"name": "Infra ", "description": "platform work"})
+    assert "infra" in created.text and "platform work" in created.text
+
+    [tag] = client.get("/api/tags").json()
+    assert tag["name"] == "infra" and tag["description"] == "platform work"
+
+    edit_form = client.get(f"/gui/labels/{tag['id']}/edit")
+    assert 'value="infra"' in edit_form.text
+
+    updated = client.post(
+        f"/gui/labels/{tag['id']}", data={"name": "Platform", "description": "new desc"}
+    )
+    assert "platform" in updated.text and "new desc" in updated.text
+
+    deleted = client.post(f"/gui/labels/{tag['id']}/delete")
+    assert "No labels yet" in deleted.text
+
+
+def test_tasks_multi_label_filter(client: TestClient) -> None:
+    client.post("/api/tasks", json={"title": "only a", "tags": ["a"]})
+    client.post("/api/tasks", json={"title": "only b", "tags": ["b"]})
+    client.post("/api/tasks", json={"title": "both", "tags": ["a", "b"]})
+
+    page = client.get("/tasks")
+    assert "any selected label" in page.text and "all selected labels" in page.text
+
+    any_match = client.get("/gui/tasks", params=[("tags", "a"), ("tags", "b")])
+    assert "only a" in any_match.text and "only b" in any_match.text and "both" in any_match.text
+
+    all_match = client.get(
+        "/gui/tasks", params=[("tags", "a"), ("tags", "b"), ("tag_match", "all")]
+    )
+    assert "both" in all_match.text
+    assert "only a" not in all_match.text and "only b" not in all_match.text
+
+
+def test_tag_sync_banner_and_propagation(client: TestClient) -> None:
+    parent = client.post("/api/tasks", json={"title": "parent", "tags": ["base"]}).json()
+    child = client.post(
+        "/api/tasks", json={"title": "child", "parent_id": parent["id"], "tags": ["extra"]}
+    ).json()
+
+    # inheritance on create: the child already carries the parent's label
+    child_tags = client.get(f"/api/tasks/{child['id']}").json()["tags"]
+    assert sorted(t["name"] for t in child_tags) == ["base", "extra"]
+
+    # adding a label to a task with descendants offers propagation (OOB banner)
+    response = client.post(
+        f"/gui/tasks/{parent['id']}",
+        data={"title": "parent", "priority": "normal", "status": "open", "tags": "base, new"},
+    )
+    assert "Apply to sub-tasks" in response.text
+    assert 'hx-swap-oob="innerHTML"' in response.text
+
+    # nothing propagated until confirmed
+    child_tags = client.get(f"/api/tasks/{child['id']}").json()["tags"]
+    assert "new" not in [t["name"] for t in child_tags]
+
+    propagated = client.post(f"/gui/tasks/{parent['id']}/propagate-tags", data={"names": "new"})
+    assert propagated.status_code == 200
+    child_tags = client.get(f"/api/tasks/{child['id']}").json()["tags"]
+    assert sorted(t["name"] for t in child_tags) == ["base", "extra", "new"]  # extras survive
+
+
+def test_tag_sync_banner_not_shown_without_changes(client: TestClient) -> None:
+    parent = client.post("/api/tasks", json={"title": "parent", "tags": ["base"]}).json()
+    client.post("/api/tasks", json={"title": "child", "parent_id": parent["id"]})
+
+    # no new labels -> no banner
+    same = client.post(
+        f"/gui/tasks/{parent['id']}",
+        data={"title": "parent", "priority": "normal", "status": "open", "tags": "base"},
+    )
+    assert "Apply to sub-tasks" not in same.text
+
+    # new label but no descendants -> no banner
+    solo = client.post("/api/tasks", json={"title": "solo"}).json()
+    added = client.post(
+        f"/gui/tasks/{solo['id']}",
+        data={"title": "solo", "priority": "normal", "status": "open", "tags": "z"},
+    )
+    assert "Apply to sub-tasks" not in added.text
+
+    # an empty propagation request is a no-op that re-renders the list
+    response = client.post(f"/gui/tasks/{parent['id']}/propagate-tags", data={"names": ""})
+    assert response.status_code == 200 and "parent" in response.text
 
 
 # --- inbox ---

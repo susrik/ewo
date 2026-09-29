@@ -112,9 +112,47 @@ def test_mark_interrupted_runs(session: Session) -> None:
 
 
 def test_builtin_jobs_registered() -> None:
-    assert {"jira_sync", "daily_report", "what_next", "notes_scan", "nuggets_match"} <= set(
-        registry.names()
-    )
+    assert {
+        "jira_sync",
+        "daily_report",
+        "what_next",
+        "notes_scan",
+        "nuggets_match",
+        "housekeeping",
+    } <= set(registry.names())
+
+
+def test_housekeeping_job(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM
+) -> None:
+    with session_factory() as session:
+        root = tasks.create_task(session, "root", tags=["root-tag"])
+        child = tasks.create_task(session, "child", parent_id=root.id)
+        tasks.update_task(session, root.id, tags=["root-tag", "late"])  # drift after create
+        child_id = child.id
+
+    run = registry.run("housekeeping", session_factory, config, fake_llm)
+
+    assert run.status == JobRunStatus.SUCCESS
+    assert run.result == "checked=2 fixed=1"
+    with session_factory() as session:
+        assert sorted(t.name for t in tasks.get_task(session, child_id).tags) == [
+            "late",
+            "root-tag",
+        ]
+
+
+def test_housekeeping_job_nothing_to_fix(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM
+) -> None:
+    with session_factory() as session:
+        root = tasks.create_task(session, "root", tags=["root-tag"])
+        tasks.create_task(session, "child", parent_id=root.id)  # inherits at create
+
+    run = registry.run("housekeeping", session_factory, config, fake_llm)
+
+    assert run.status == JobRunStatus.SUCCESS
+    assert run.result == "checked=2 fixed=0"
 
 
 def test_nuggets_match_job(

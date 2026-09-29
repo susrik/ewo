@@ -1,0 +1,16 @@
+{% extends "_layout.html" %}
+{% block content %}
+<section class="card bg-base-100 shadow">
+  <div class="card-body">
+    <h2 class="card-title">Labels</h2>
+    <form hx-post="/gui/labels" hx-target="#label-list" hx-on::after-request="this.reset()" class="flex flex-wrap gap-2">
+      <input class="input input-bordered input-sm" name="name" placeholder="Label name" required>
+      <input class="input input-bordered input-sm flex-1" name="description" placeholder="Description (optional)">
+      <button class="btn btn-sm btn-primary" type="submit">Add</button>
+    </form>
+    <div id="label-list">
+      {% include "_labels.html" %}
+    </div>
+  </div>
+</section>
+{% endblock %}

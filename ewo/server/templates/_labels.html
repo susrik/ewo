@@ -1,0 +1,18 @@
+<table class="table mt-2">
+  <thead><tr><th>Label</th><th>Description</th><th>Tasks</th><th></th></tr></thead>
+  <tbody>
+    {% for row in rows %}
+    <tr id="label-{{ row.tag.id }}">
+      <td><a class="link link-hover font-medium" href="/tasks?tags={{ row.tag.name | urlencode }}">{{ row.tag.name }}</a></td>
+      <td class="text-sm">{{ row.tag.description or "—" }}</td>
+      <td>{{ row.task_count }}</td>
+      <td class="whitespace-nowrap">
+        <button class="btn btn-xs" hx-get="/gui/labels/{{ row.tag.id }}/edit" hx-target="#label-{{ row.tag.id }}" hx-swap="outerHTML">edit</button>
+        <button class="btn btn-xs btn-ghost" hx-post="/gui/labels/{{ row.tag.id }}/delete" hx-target="#label-list">delete</button>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="opacity-60">No labels yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>

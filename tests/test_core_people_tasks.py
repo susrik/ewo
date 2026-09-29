@@ -179,6 +179,38 @@ def test_list_tasks_filters(session: Session) -> None:
     assert tasks.list_tasks(session, tag="none") == []
 
 
+def test_child_inherits_parent_tags(session: Session) -> None:
+    parent = tasks.create_task(session, "epic", tags=["Platform", "Q3"])
+    child = tasks.create_task(session, "story", parent_id=parent.id, tags=["q3", "ui"])
+    assert sorted(t.name for t in child.tags) == ["platform", "q3", "ui"]
+
+    # inheritance flows through the direct parent, accumulating down the tree
+    grand = tasks.create_task(session, "sub", parent_id=child.id)
+    assert sorted(t.name for t in grand.tags) == ["platform", "q3", "ui"]
+
+    # tasks without a parent keep only their own tags
+    root = tasks.create_task(session, "root", tags=["x"])
+    assert [t.name for t in root.tags] == ["x"]
+
+
+def test_list_tasks_multi_tag_filter(session: Session) -> None:
+    only_a = tasks.create_task(session, "a", tags=["alpha"])
+    only_b = tasks.create_task(session, "b", tags=["beta"])
+    both = tasks.create_task(session, "both", tags=["alpha", "beta"])
+
+    any_match = tasks.list_tasks(session, tags=["Alpha", "beta"])
+    assert {t.id for t in any_match} == {only_a.id, only_b.id, both.id}
+
+    all_match = tasks.list_tasks(session, tags=["alpha", "beta"], tag_match="all")
+    assert [t.id for t in all_match] == [both.id]
+
+    # the legacy single-tag kwarg merges into the list
+    legacy = tasks.list_tasks(session, tag="alpha", tags=["beta"], tag_match="all")
+    assert [t.id for t in legacy] == [both.id]
+
+    assert tasks.list_tasks(session, tags=["nope"]) == []
+
+
 def test_notes_and_links(session: Session) -> None:
     task = tasks.create_task(session, "with note")
     note = tasks.add_note(session, "a note", task_id=task.id)

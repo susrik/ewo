@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -18,9 +18,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
 from ewo.core import nuggets, one_on_ones, people, task_organize, tasks
+from ewo.core import tags as tags_core
 from ewo.core.dashboard import build_dashboard
 from ewo.core.llm import LLMClient
 from ewo.core.notes import NotesReader
+from ewo.core.people import NotFoundError
 from ewo.core.whatnext import upcoming_deadlines, what_next
 from ewo.db.models import (
     JobRun,
@@ -132,15 +134,20 @@ def _task_context(
     status: str = "",
     assignee: str = "",
     tag: str = "",
+    tags: list[str] | None = None,
+    tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
 ) -> dict[str, object]:
     parsed_status = TaskStatus(status) if status else None
+    selected_tags = [t for t in (tags or []) if t.strip()]
     rows = tasks.list_tasks(
         session,
         status=parsed_status,
         assignee_id=_opt_int(assignee),
         tag=tag or None,
+        tags=selected_tags or None,
+        tag_match=tag_match,
         include_closed=include_closed,
     )
     if source:
@@ -151,11 +158,14 @@ def _task_context(
             "status": status,
             "assignee": assignee,
             "tag": tag,
+            "tags": selected_tags,
+            "tag_match": tag_match,
             "source": source,
             "include_closed": include_closed,
         },
         "people": people.list_people(session),
         "sources": list(TaskSource),
+        "all_tags": tags_core.list_tags(session),
     }
 
 
@@ -167,10 +177,12 @@ def tasks_page(
     status: str = "",
     assignee: str = "",
     tag: str = "",
+    tags: Annotated[list[str] | None, Query()] = None,
+    tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
 ) -> HTMLResponse:
-    context = _task_context(session, status, assignee, tag, source, include_closed)
+    context = _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed)
     context["page"] = "tasks"
     context["llm_enabled"] = bool(config.llm.api_key)
     return _render(request, "tasks.html", context)
@@ -183,13 +195,15 @@ def task_list(
     status: str = "",
     assignee: str = "",
     tag: str = "",
+    tags: Annotated[list[str] | None, Query()] = None,
+    tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
 ) -> HTMLResponse:
     return _render(
         request,
         "_tasks.html",
-        _task_context(session, status, assignee, tag, source, include_closed),
+        _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed),
     )
 
 
@@ -197,6 +211,7 @@ def task_list(
 def create_task(
     request: Request,
     session: SessionDep,
+    config: ConfigDep,
     title: Annotated[str, Form()],
     priority: Annotated[str, Form()] = "normal",
     assignee_id: Annotated[str, Form()] = "",
@@ -218,7 +233,12 @@ def create_task(
     )
     if compact:
         return _render(request, "_task_added.html", {"task": task})
-    return task_list(request, session)
+    context = _task_context(session)
+    if config.llm.api_key:
+        # offer to find related existing tasks and group them with the new one
+        context["related_task"] = task
+        return _render(request, "_tasks_oob.html", context)
+    return _render(request, "_tasks.html", context)
 
 
 # --- task organization (AI) — declared before /gui/tasks/{task_id} so the
@@ -290,12 +310,188 @@ def organize_create(
 @router.post("/gui/tasks/organize/retitle", response_class=HTMLResponse)
 def organize_retitle(
     request: Request,
-    session: SessionDep,
     task_id: Annotated[int, Form()],
     title: Annotated[str, Form()],
+    session: SessionDep,
 ) -> HTMLResponse:
     tasks.update_task(session, task_id, title=title.strip())
     return _tasks_after_organize(request, session)
+
+
+@router.post("/gui/tasks/organize/topic", response_class=HTMLResponse)
+def organize_topic(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+    topic: Annotated[str, Form()],
+) -> HTMLResponse:
+    """Propose a parent/child grouping of open tasks related to a free-form topic."""
+    topic = topic.strip()
+    context: dict[str, object] = {"proposal": None, "error": None, "topic": topic}
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    elif not topic:
+        context["error"] = "Enter a topic first."
+    else:
+        try:
+            proposal, _tokens = task_organize.propose_topic_group(session, llm, topic)
+            if proposal is None:
+                context["error"] = f"No tasks found that clearly relate to “{topic}”."
+            else:
+                context["proposal"] = proposal
+                context["tasks_by_id"] = {t.id: t for t in tasks.list_tasks(session)}
+        except ValueError as exc:
+            context["error"] = str(exc)
+    return _render(request, "_topic_group.html", context)
+
+
+@router.post("/gui/tasks/organize/group", response_class=HTMLResponse)
+def organize_group(
+    request: Request,
+    session: SessionDep,
+    child_ids: Annotated[list[int] | None, Form()] = None,
+    parent_choice: Annotated[str, Form()] = "new",
+    parent_title: Annotated[str, Form()] = "",
+    parent_id: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Apply the confirmed grouping, then refresh the task list. A validation
+    error is shown inline in the (out-of-band) organize panel."""
+    error: str | None = None
+    try:
+        task_organize.apply_group(
+            session,
+            child_ids or [],
+            new_parent_title=(parent_title.strip() or None) if parent_choice == "new" else None,
+            existing_parent_id=_opt_int(parent_id) if parent_choice == "existing" else None,
+        )
+    except ValueError as exc:
+        error = str(exc)
+    context = _task_context(session)
+    context["organize_error"] = error
+    return _render(request, "_tasks_oob.html", context)
+
+
+@router.post("/gui/tasks/organize/related", response_class=HTMLResponse)
+def organize_related(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+    task_id: Annotated[int, Form()],
+    answered: Annotated[str, Form()] = "",
+    question: Annotated[list[str] | None, Form()] = None,
+    answer: Annotated[list[str] | None, Form()] = None,
+) -> HTMLResponse:
+    """Two-step "find related tasks" flow for a freshly created task.
+
+    First POST (no ``answered`` field) asks the LLM for clarifying questions
+    and renders answer inputs; the questions round-trip in hidden form fields
+    (one Q&A round max, Q&A state is never persisted server-side). Resubmitting
+    with answers proposes a TopicGroupProposal rendered by the shared
+    _topic_group.html review; confirmation reuses /gui/tasks/organize/group.
+    """
+    if not answered:
+        context: dict[str, object] = {"error": None, "task": None, "questions": []}
+        if not config.llm.api_key:
+            context["error"] = "No LLM API key configured."
+        else:
+            try:
+                result, _tokens = task_organize.propose_related(session, llm, task_id)
+                if isinstance(result, task_organize.RelatedQuestions):
+                    context["task"] = tasks.get_task(session, task_id)
+                    context["questions"] = result.questions
+            except (NotFoundError, ValueError) as exc:
+                context["error"] = str(exc)
+        return _render(request, "_related_questions.html", context)
+    context = {"proposal": None, "error": None, "topic": ""}
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    else:
+        try:
+            task = tasks.get_task(session, task_id)
+            qa = [
+                (q.strip(), a.strip())
+                for q, a in zip(question or [], answer or [], strict=False)
+                if q.strip()
+            ]
+            result, _tokens = task_organize.propose_related(session, llm, task_id, qa=qa)
+            if result is None:
+                context["error"] = f"No tasks found that clearly relate to #{task.id} {task.title}."
+            elif isinstance(result, task_organize.TopicGroupProposal):
+                context["topic"] = f"#{task.id} {task.title}"
+                context["proposal"] = result
+                context["tasks_by_id"] = {t.id: t for t in tasks.list_tasks(session)}
+        except (NotFoundError, ValueError) as exc:
+            context["error"] = str(exc)
+    return _render(request, "_topic_group.html", context)
+
+
+@router.post("/gui/tasks/organize/split/propose", response_class=HTMLResponse)
+def organize_split_propose(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+    task_id: Annotated[int, Form()],
+    instructions: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Propose an AI split of one task into parts; render the review form in the
+    task's detail panel. Stateless: the validated proposal round-trips through
+    hidden form fields and is re-validated at apply time."""
+    instructions = instructions.strip()
+    context = _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key))
+    context["error"] = None
+    context["proposal"] = None
+    context["proposal_json"] = ""
+    context["instructions"] = instructions
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    elif not instructions:
+        context["error"] = "Enter split instructions first."
+    else:
+        try:
+            proposal, _tokens = task_organize.propose_split_parts(
+                session, llm, task_id, instructions
+            )
+            context["proposal"] = proposal
+            context["proposal_json"] = proposal.model_dump_json()
+        except ValueError as exc:
+            context["error"] = str(exc)
+    return _render(request, "_split_proposal.html", context)
+
+
+@router.post("/gui/tasks/organize/split/apply", response_class=HTMLResponse)
+def organize_split_apply(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    task_id: Annotated[int, Form()],
+    mode: Annotated[str, Form()],
+    proposal: Annotated[str, Form()],
+    selected: Annotated[list[int] | None, Form()] = None,
+) -> HTMLResponse:
+    """Re-validate the hidden proposal against the task's current nuggets and
+    apply only the checked parts, then refresh the task list plus the source
+    task's detail panel (out-of-band)."""
+    error: str | None = None
+    try:
+        parsed = task_organize.SplitPartsProposal.model_validate_json(proposal)
+        if parsed.mode != mode:
+            raise ValueError("split mode does not match the proposal")
+        attached = tasks.list_attached_nuggets(session, task_id)
+        validated = task_organize._validate_split_parts(parsed, attached)
+        chosen = set(selected or [])
+        picked = [part for index, part in enumerate(validated.parts) if index in chosen]
+        if not picked:
+            raise ValueError("no split parts selected")
+        task_organize.apply_split_parts(session, task_id, picked, validated.mode)
+    except ValueError as exc:
+        error = str(exc)
+    context = _task_context(session)
+    context["split_error"] = error
+    context.update(_detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)))
+    return _render(request, "_split_applied.html", context)
 
 
 @router.get("/gui/tasks/{task_id}", response_class=HTMLResponse)
@@ -332,6 +528,7 @@ def task_update(
     tags: Annotated[str, Form()] = "",
     description: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
+    before = {t.name for t in tasks.get_task(session, task_id).tags}
     task = tasks.update_task(
         session,
         task_id,
@@ -345,7 +542,23 @@ def task_update(
         due_date=_opt_date(due_date),
         description=description.strip() or None,
     )
+    added = sorted({t.name for t in task.tags} - before)
+    if added and tags_core.descendant_ids(session, task_id):
+        return _render(request, "_task_row_oob.html", {"task": task, "added_tags": added})
     return _render(request, "_task_row.html", {"task": task})
+
+
+@router.post("/gui/tasks/{task_id}/propagate-tags", response_class=HTMLResponse)
+def task_propagate_tags(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    names: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    tag_names = [n.strip() for n in names.split(",") if n.strip()]
+    if tag_names:
+        tags_core.add_tags_to_descendants(session, task_id, tag_names)
+    return _render(request, "_tasks_oob.html", _task_context(session))
 
 
 @router.post("/gui/tasks/{task_id}/status", response_class=HTMLResponse)
@@ -359,35 +572,50 @@ def set_task_status(
     return _render(request, "_task_row.html", {"task": task})
 
 
-def _detail_context(session: Session, task_id: int) -> dict[str, object]:
+def _detail_context(session: Session, task_id: int, llm_enabled: bool = False) -> dict[str, object]:
     return {
         "task": tasks.get_task(session, task_id),
         "open_tasks": tasks.list_tasks(session),
         "kinds": list(NuggetKind),
+        "llm_enabled": llm_enabled,
     }
 
 
 @router.get("/gui/tasks/{task_id}/detail", response_class=HTMLResponse)
-def task_detail(request: Request, task_id: int, session: SessionDep) -> HTMLResponse:
-    return _render(request, "_task_detail.html", _detail_context(session, task_id))
+def task_detail(
+    request: Request, task_id: int, session: SessionDep, config: ConfigDep
+) -> HTMLResponse:
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)),
+    )
 
 
 @router.post("/gui/tasks/{task_id}/notes", response_class=HTMLResponse)
 def task_add_note(
-    request: Request, task_id: int, session: SessionDep, body: Annotated[str, Form()]
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    body: Annotated[str, Form()],
 ) -> HTMLResponse:
     if body.strip():
         tasks.add_note(session, body.strip(), task_id=task_id)
-    return task_detail(request, task_id, session)
+    return task_detail(request, task_id, session, config)
 
 
 @router.post("/gui/tasks/{task_id}/children", response_class=HTMLResponse)
 def task_add_child(
-    request: Request, task_id: int, session: SessionDep, title: Annotated[str, Form()]
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    title: Annotated[str, Form()],
 ) -> HTMLResponse:
     if title.strip():
         tasks.create_task(session, title=title.strip(), parent_id=task_id)
-    return task_detail(request, task_id, session)
+    return task_detail(request, task_id, session, config)
 
 
 @router.post("/gui/tasks/{task_id}/links", response_class=HTMLResponse)
@@ -403,15 +631,15 @@ def task_add_links(
     if keys:
         nuggets.ensure_jira_links(session, task, keys, _jira_base_url(config))
         session.commit()
-    return task_detail(request, task_id, session)
+    return task_detail(request, task_id, session, config)
 
 
 @router.post("/gui/tasks/{task_id}/links/{link_id}/delete", response_class=HTMLResponse)
 def task_delete_link(
-    request: Request, task_id: int, link_id: int, session: SessionDep
+    request: Request, task_id: int, link_id: int, session: SessionDep, config: ConfigDep
 ) -> HTMLResponse:
     tasks.unlink_external(session, task_id, link_id)
-    return task_detail(request, task_id, session)
+    return task_detail(request, task_id, session, config)
 
 
 # --- inbox (nuggets) ---
@@ -546,6 +774,7 @@ def nugget_edit(
     request: Request,
     nugget_id: int,
     session: SessionDep,
+    config: ConfigDep,
     summary: Annotated[str, Form()],
     kind: Annotated[str, Form()] = "",
     due_date: Annotated[str, Form()] = "",
@@ -558,7 +787,11 @@ def nugget_edit(
         fields["kind"] = NuggetKind(kind)
     fields["due_date"] = _opt_date(due_date)
     nuggets.update_nugget(session, nugget_id, **fields)
-    return _render(request, "_task_detail.html", _detail_context(session, task_id))  # type: ignore[arg-type]
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)),  # type: ignore[arg-type]
+    )
 
 
 @router.post("/gui/nuggets/{nugget_id}/move", response_class=HTMLResponse)
@@ -566,22 +799,33 @@ def nugget_move(
     request: Request,
     nugget_id: int,
     session: SessionDep,
+    config: ConfigDep,
     task_id: Annotated[int, Form()],
 ) -> HTMLResponse:
     """Move a nugget to another task; re-render the (now former) task panel."""
     nugget = nuggets.get_nugget(session, nugget_id)
     source_task_id = nugget.task_id
     nuggets.move_nugget(session, nugget_id, task_id)
-    return _render(request, "_task_detail.html", _detail_context(session, source_task_id))  # type: ignore[arg-type]
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, source_task_id, llm_enabled=bool(config.llm.api_key)),  # type: ignore[arg-type]
+    )
 
 
 @router.post("/gui/nuggets/{nugget_id}/detach", response_class=HTMLResponse)
-def nugget_detach(request: Request, nugget_id: int, session: SessionDep) -> HTMLResponse:
+def nugget_detach(
+    request: Request, nugget_id: int, session: SessionDep, config: ConfigDep
+) -> HTMLResponse:
     """Remove a nugget from its task (back to the inbox); re-render the panel."""
     nugget = nuggets.get_nugget(session, nugget_id)
     source_task_id = nugget.task_id
     nuggets.detach_nugget(session, nugget_id)
-    return _render(request, "_task_detail.html", _detail_context(session, source_task_id))  # type: ignore[arg-type]
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, source_task_id, llm_enabled=bool(config.llm.api_key)),  # type: ignore[arg-type]
+    )
 
 
 # declared last: the catch-all action route would otherwise shadow the
@@ -681,6 +925,60 @@ def one_on_one_list(request: Request, session: SessionDep) -> HTMLResponse:
     return _render(
         request, "_one_on_ones.html", {"meetings": one_on_ones.list_one_on_ones(session)}
     )
+
+
+# --- labels (tags) ---
+
+
+def _labels_context(session: Session) -> dict[str, object]:
+    rows = [{"tag": tag, "task_count": len(tag.tasks)} for tag in tags_core.list_tags(session)]
+    return {"rows": rows}
+
+
+@router.get("/labels", response_class=HTMLResponse)
+def labels_page(request: Request, session: SessionDep) -> HTMLResponse:
+    context = _labels_context(session)
+    context["page"] = "labels"
+    return _render(request, "labels.html", context)
+
+
+@router.get("/gui/labels", response_class=HTMLResponse)
+def label_list(request: Request, session: SessionDep) -> HTMLResponse:
+    return _render(request, "_labels.html", _labels_context(session))
+
+
+@router.post("/gui/labels", response_class=HTMLResponse)
+def create_label(
+    request: Request,
+    session: SessionDep,
+    name: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    tags_core.create_tag(session, name, description=description.strip() or None)
+    return label_list(request, session)
+
+
+@router.get("/gui/labels/{tag_id}/edit", response_class=HTMLResponse)
+def label_edit(request: Request, tag_id: int, session: SessionDep) -> HTMLResponse:
+    return _render(request, "_label_edit.html", {"tag": tags_core.get_tag(session, tag_id)})
+
+
+@router.post("/gui/labels/{tag_id}", response_class=HTMLResponse)
+def label_update(
+    request: Request,
+    tag_id: int,
+    session: SessionDep,
+    name: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    tags_core.update_tag(session, tag_id, name=name, description=description)
+    return label_list(request, session)
+
+
+@router.post("/gui/labels/{tag_id}/delete", response_class=HTMLResponse)
+def label_delete(request: Request, tag_id: int, session: SessionDep) -> HTMLResponse:
+    tags_core.delete_tag(session, tag_id)
+    return label_list(request, session)
 
 
 # --- jobs ---

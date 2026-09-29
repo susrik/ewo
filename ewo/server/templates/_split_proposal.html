@@ -1,0 +1,32 @@
+{% if error %}
+<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ error }}</span></div>
+{% include "_task_detail.html" %}
+{% elif proposal and proposal.parts %}
+<div class="border rounded p-3 mt-2 proposal">
+  <p class="text-sm mb-2">
+    Split #{{ task.id }} {{ task.title }} into {{ proposal.parts | length }} {{ proposal.mode }}
+    {% if instructions %}<span class="opacity-60"> — “{{ instructions }}”</span>{% endif %}
+  </p>
+  <form hx-post="/gui/tasks/organize/split/apply" hx-target="#task-list" class="grid gap-2">
+    <input type="hidden" name="task_id" value="{{ task.id }}">
+    <input type="hidden" name="mode" value="{{ proposal.mode }}">
+    <input type="hidden" name="proposal" value="{{ proposal_json }}">
+    <div class="grid gap-1">
+      {% for part in proposal.parts %}
+      <label class="label cursor-pointer justify-start gap-2 py-0.5">
+        <input type="checkbox" class="checkbox checkbox-sm" name="selected" value="{{ loop.index0 }}" checked>
+        <span class="label-text">{{ part.title }}{% if part.nugget_ids %} ({{ part.nugget_ids | length }} nugget{{ 's' if part.nugget_ids | length != 1 }}){% endif %}{% if part.reason %}<span class="opacity-60"> — {{ part.reason }}</span>{% endif %}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-xs btn-primary" type="submit">Apply selected</button>
+      <button class="btn btn-xs btn-ghost" type="button"
+              hx-get="/gui/tasks/{{ task.id }}/detail" hx-target="#task-{{ task.id }}-detail">Dismiss</button>
+    </div>
+  </form>
+</div>
+{% else %}
+<p class="opacity-60 text-sm mt-2">No valid split parts proposed.</p>
+{% include "_task_detail.html" %}
+{% endif %}
