@@ -129,6 +129,12 @@ def _parent_candidates(session: Session, task: Task) -> list[Task]:
     return candidates
 
 
+def _merge_candidates(session: Session, task: Task) -> list[Task]:
+    """Open tasks *task* may be merged into (not itself, not its descendants)."""
+    excluded = _descendant_ids(task) | {task.id}
+    return [t for t in tasks.list_tasks(session) if t.id not in excluded]
+
+
 def _task_context(
     session: Session,
     status: str = "",
@@ -509,6 +515,7 @@ def task_edit(request: Request, task_id: int, session: SessionDep) -> HTMLRespon
             "task": task,
             "people": people.list_people(session),
             "parent_candidates": _parent_candidates(session, task),
+            "merge_candidates": _merge_candidates(session, task),
         },
     )
 
@@ -546,6 +553,59 @@ def task_update(
     if added and tags_core.descendant_ids(session, task_id):
         return _render(request, "_task_row_oob.html", {"task": task, "added_tags": added})
     return _render(request, "_task_row.html", {"task": task})
+
+
+@router.post("/gui/tasks/{task_id}/merge", response_class=HTMLResponse)
+def task_merge(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    into_id: Annotated[int, Form()],
+) -> HTMLResponse:
+    """Merge this task into *into_id* (this task is deleted); refresh the list."""
+    task_organize.apply_merge(session, into_id, task_id)
+    return _tasks_after_organize(request, session)
+
+
+@router.post("/gui/tasks/{task_id}/description/propose", response_class=HTMLResponse)
+def task_description_propose(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+) -> HTMLResponse:
+    """AI suggests an updated description from the task's attached nuggets."""
+    context: dict[str, object] = {
+        "task": tasks.get_task(session, task_id),
+        "suggested_description": None,
+        "error": None,
+    }
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    else:
+        try:
+            description, _tokens = task_organize.propose_description(session, llm, task_id)
+            context["suggested_description"] = description
+        except ValueError as exc:
+            context["error"] = str(exc)
+    return _render(request, "_description_preview.html", context)
+
+
+@router.post("/gui/tasks/{task_id}/description/apply", response_class=HTMLResponse)
+def task_description_apply(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    description: Annotated[str, Form()],
+) -> HTMLResponse:
+    tasks.update_task(session, task_id, description=description.strip() or None)
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)),
+    )
 
 
 @router.post("/gui/tasks/{task_id}/propagate-tags", response_class=HTMLResponse)
@@ -631,15 +691,15 @@ def task_add_links(
     if keys:
         nuggets.ensure_jira_links(session, task, keys, _jira_base_url(config))
         session.commit()
-    return task_detail(request, task_id, session, config)
+    return _render(request, "_task_jira.html", {"task": task})
 
 
 @router.post("/gui/tasks/{task_id}/links/{link_id}/delete", response_class=HTMLResponse)
 def task_delete_link(
-    request: Request, task_id: int, link_id: int, session: SessionDep, config: ConfigDep
+    request: Request, task_id: int, link_id: int, session: SessionDep
 ) -> HTMLResponse:
     tasks.unlink_external(session, task_id, link_id)
-    return task_detail(request, task_id, session, config)
+    return _render(request, "_task_jira.html", {"task": tasks.get_task(session, task_id)})
 
 
 # --- inbox (nuggets) ---
@@ -735,15 +795,67 @@ def inbox_attach_group(
     task_id: Annotated[int, Form()],
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
+    selected: Annotated[str, Form()] = "",
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
-    """Attach every listed nugget suggested for *task_id* in one click."""
+    """Attach the selected nuggets suggested for *task_id* (all when none chosen)."""
     items = nuggets.list_nuggets(session, status=NuggetStatus.NEW, owner_id=_opt_int(owner))
+    chosen = set(nugget_ids or []) if selected else None
     for item in items:
-        if item.suggested_task_id == task_id:
+        if item.suggested_task_id == task_id and (chosen is None or item.id in chosen):
             nuggets.attach_nugget(
                 session, item.id, task_id=task_id, jira_base_url=_jira_base_url(config)
             )
     return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+
+
+@router.post("/gui/inbox/suggest-creates", response_class=HTMLResponse)
+def inbox_suggest_creates(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+) -> HTMLResponse:
+    """AI proposes new tasks that group clusters of unmapped notes; nothing is
+    persisted until the user picks notes and confirms."""
+    context: dict[str, object] = {"proposals": [], "nuggets_by_id": {}, "error": None}
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    else:
+        try:
+            proposals, _tokens = task_organize.propose_inbox_creates(session, llm)
+            new_nuggets = nuggets.list_nuggets(session, status=NuggetStatus.NEW)
+            context["proposals"] = proposals
+            context["nuggets_by_id"] = {n.id: n for n in new_nuggets}
+        except ValueError as exc:
+            context["error"] = str(exc)
+    return _render(request, "_inbox_create.html", context)
+
+
+@router.post("/gui/inbox/create-group", response_class=HTMLResponse)
+def inbox_create_group(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    title: Annotated[str, Form()],
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+) -> HTMLResponse:
+    """Create a task from the user-confirmed cluster of notes and refresh the inbox."""
+    ids = [n for n in (nugget_ids or [])]
+    error: str | None = None
+    if not title.strip():
+        error = "New task needs a title."
+    elif not ids:
+        error = "Select at least one note to create a task."
+    else:
+        task_organize.apply_create(
+            session, title.strip(), ids, jira_base_url=_jira_base_url(config)
+        )
+    context = _inbox_context(session, status, owner)
+    context["inbox_create_error"] = error
+    return _render(request, "_inbox_oob.html", context)
 
 
 @router.post("/gui/nuggets/{nugget_id}/attach", response_class=HTMLResponse)

@@ -1,5 +1,6 @@
 <div id="nugget-{{ nugget.id }}" class="border rounded p-3 {% if nugget.status.value != 'new' %}opacity-60{% endif %}">
   <div class="flex flex-wrap items-baseline gap-2">
+    {% if group_form_id %}<input type="checkbox" class="checkbox checkbox-xs" name="nugget_ids" value="{{ nugget.id }}" form="{{ group_form_id }}" checked title="Include in the group attach">{% endif %}
     <span class="badge badge-sm {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span>
     <span class="font-medium flex-1">{{ nugget.summary }}</span>
     <span class="text-xs opacity-60 font-mono">{{ nugget.path }}:{{ nugget.line }}</span>

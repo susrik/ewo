@@ -1,0 +1,16 @@
+<div id="task-{{ task.id }}-jira" class="flex flex-wrap gap-2 items-center">
+  {% set jira_links = task.external_links | selectattr('system', 'equalto', 'jira') | list %}
+  {% for link in jira_links %}
+  <span class="badge badge-outline gap-1">
+    {% if link.url %}<a class="link link-primary" href="{{ link.url }}">{{ link.external_key }}</a>{% else %}{{ link.external_key }}{% endif %}
+    {% if link.external_status %}({{ link.external_status }}){% endif %}
+    <button class="btn btn-ghost btn-xs px-1" hx-post="/gui/tasks/{{ task.id }}/links/{{ link.id }}/delete" hx-target="#task-{{ task.id }}-jira" hx-swap="outerHTML" title="Remove link">✕</button>
+  </span>
+  {% else %}
+  <span class="opacity-60">none</span>
+  {% endfor %}
+  <form hx-post="/gui/tasks/{{ task.id }}/links" hx-target="#task-{{ task.id }}-jira" hx-swap="outerHTML" class="flex gap-1 items-center">
+    <input class="input input-bordered input-xs w-40" name="jira_keys" placeholder="PROJ-123, PROJ-456">
+    <button class="btn btn-xs" type="submit">Add</button>
+  </form>
+</div>

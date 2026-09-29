@@ -1,0 +1,27 @@
+{% if error %}
+<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ error }}</span></div>
+{% elif not proposals %}
+<p class="opacity-60 text-sm mt-2">No new-task suggestions right now.</p>
+{% else %}
+<div class="grid gap-2 mt-2">
+  {% for p in proposals %}
+  <form hx-post="/gui/inbox/create-group" hx-target="#inbox-list" class="border rounded p-3 grid gap-2">
+    <div class="flex items-center gap-2">
+      <span class="badge badge-success badge-sm">new task</span>
+      <input class="input input-bordered input-sm flex-1" name="title" value="{{ p.title }}" required>
+      <button class="btn btn-xs btn-primary" type="submit">Create from selected</button>
+    </div>
+    {% if p.reason %}<div class="text-xs opacity-70">— {{ p.reason }}</div>{% endif %}
+    <div class="grid gap-1">
+      {% for nugget_id in p.nugget_ids %}
+      {% set nugget = nuggets_by_id[nugget_id] %}
+      <label class="flex items-start gap-2 cursor-pointer">
+        <input type="checkbox" class="checkbox checkbox-xs mt-0.5" name="nugget_ids" value="{{ nugget.id }}" checked>
+        <span class="text-sm"><span class="badge badge-xs {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span> {{ nugget.summary }}</span>
+      </label>
+      {% endfor %}
+    </div>
+  </form>
+  {% endfor %}
+</div>
+{% endif %}

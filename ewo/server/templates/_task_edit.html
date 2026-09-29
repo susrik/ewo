@@ -14,7 +14,7 @@
           <option value="">(unassigned)</option>
           {% for person in people %}<option value="{{ person.id }}" {% if task.assignee_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
         </select>
-        <select class="select select-bordered select-sm max-w-56" name="parent_id" title="Parent task">
+        <select class="select select-bordered select-sm max-w-56" name="parent_id" title="Make this a sub-task of…">
           <option value="">(no parent)</option>
           {% for candidate in parent_candidates %}<option value="{{ candidate.id }}" {% if task.parent_id == candidate.id %}selected{% endif %}>#{{ candidate.id }} {{ candidate.title }}</option>{% endfor %}
         </select>
@@ -25,5 +25,20 @@
         <button class="btn btn-sm" type="button" hx-get="/gui/tasks/{{ task.id }}" hx-target="#task-{{ task.id }}" hx-swap="outerHTML">Cancel</button>
       </div>
     </form>
+
+    <div class="mt-2 grid gap-2">
+      <div class="flex flex-wrap items-center gap-1">
+        <span class="font-semibold text-xs">Jira tickets:</span>
+        {% include "_task_jira.html" %}
+      </div>
+      <form hx-post="/gui/tasks/{{ task.id }}/merge" hx-target="#task-list" class="flex gap-2 items-center"
+            hx-confirm="This deletes this task, moving its nuggets, notes, sub-tasks and links onto the selected task. Continue?">
+        <select class="select select-bordered select-sm max-w-64" name="into_id" title="Merge this task into another" required>
+          <option value="">Merge this task into…</option>
+          {% for candidate in merge_candidates %}<option value="{{ candidate.id }}">#{{ candidate.id }} {{ candidate.title }}</option>{% endfor %}
+        </select>
+        <button class="btn btn-sm btn-warning" type="submit">Merge</button>
+      </form>
+    </div>
   </td>
 </tr>

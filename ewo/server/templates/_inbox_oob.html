@@ -1,0 +1,4 @@
+{% include "_inbox.html" %}
+<div id="inbox-create-result" hx-swap-oob="innerHTML">
+  {% if inbox_create_error %}<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ inbox_create_error }}</span></div>{% endif %}
+</div>

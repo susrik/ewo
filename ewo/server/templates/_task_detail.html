@@ -7,57 +7,67 @@
     {% if task.parent %} · parent #{{ task.parent.id }} {{ task.parent.title }}{% endif %}
   </div>
 
-  <div>
-    <h3 class="font-semibold">Nuggets (from notes)</h3>
-    <div class="grid gap-2 mt-1">
-      {% for nugget in task.nuggets %}
-      <div class="border border-base-300 rounded p-2 bg-base-100">
-        <div class="flex flex-wrap items-baseline gap-2">
-          <span class="badge badge-xs {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span>
-          <span class="text-xs opacity-60 font-mono">{{ nugget.path }}:{{ nugget.line }}</span>
-          {% if nugget.due_date %}<span class="badge badge-xs badge-error badge-outline">due {{ nugget.due_date.isoformat() }}</span>{% endif %}
-          {% for key in nugget.jira_keys %}<span class="badge badge-xs badge-primary badge-outline">{{ key }}</span>{% endfor %}
-        </div>
-        <form hx-post="/gui/nuggets/{{ nugget.id }}/edit" hx-target="#task-{{ task.id }}-detail" class="flex flex-wrap gap-1 mt-1 items-center">
-          <input class="input input-bordered input-xs flex-1 min-w-48" name="summary" value="{{ nugget.summary }}" required>
-          <select class="select select-bordered select-xs" name="kind">
-            {% for k in kinds %}<option value="{{ k.value }}" {% if k == nugget.kind %}selected{% endif %}>{{ k.value }}</option>{% endfor %}
-          </select>
-          <input class="input input-bordered input-xs" type="date" name="due_date" value="{{ nugget.due_date.isoformat() if nugget.due_date else '' }}">
-          <button class="btn btn-xs" type="submit">Save</button>
-        </form>
-        <div class="flex flex-wrap gap-1 mt-1 items-center">
-          <form hx-post="/gui/nuggets/{{ nugget.id }}/move" hx-target="#task-{{ task.id }}-detail" class="flex gap-1 items-center">
-            <select class="select select-bordered select-xs max-w-56" name="task_id">
-              {% for other in open_tasks %}
-              {% if other.id != task.id %}<option value="{{ other.id }}">#{{ other.id }} {{ other.title }}</option>{% endif %}
-              {% endfor %}
-            </select>
-            <button class="btn btn-xs btn-ghost" type="submit">Move</button>
-          </form>
-          <button class="btn btn-xs btn-ghost" hx-post="/gui/nuggets/{{ nugget.id }}/detach" hx-target="#task-{{ task.id }}-detail" title="Remove from this task (back to the inbox)">Detach</button>
-        </div>
-      </div>
-      {% else %}
-      <p class="opacity-60">No nuggets attached yet — attach some from the <a class="link" href="/inbox">inbox</a>.</p>
-      {% endfor %}
+  {% if llm_enabled and task.nuggets %}
+  <div class="grid gap-1">
+    <div>
+      <button class="btn btn-sm btn-outline" hx-post="/gui/tasks/{{ task.id }}/description/propose" hx-target="#task-{{ task.id }}-description-preview" hx-swap="innerHTML" title="AI suggests an updated description from the attached nuggets">Suggest description (AI)</button>
     </div>
+    <div id="task-{{ task.id }}-description-preview"></div>
+  </div>
+  {% endif %}
+
+  <div>
+    <details>
+      <summary class="font-semibold cursor-pointer">Nuggets (from notes) ({{ task.nuggets | length }})</summary>
+      <div class="grid gap-2 mt-2">
+        {% for nugget in task.nuggets %}
+        <div class="border border-base-300 rounded p-2 bg-base-100">
+          <div class="flex flex-wrap items-baseline gap-2">
+            <span class="badge badge-xs {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span>
+            <span class="text-xs opacity-60 font-mono">{{ nugget.path }}:{{ nugget.line }}</span>
+            {% if nugget.due_date %}<span class="badge badge-xs badge-error badge-outline">due {{ nugget.due_date.isoformat() }}</span>{% endif %}
+            {% for key in nugget.jira_keys %}<span class="badge badge-xs badge-primary badge-outline">{{ key }}</span>{% endfor %}
+          </div>
+          <form hx-post="/gui/nuggets/{{ nugget.id }}/edit" hx-target="#task-{{ task.id }}-detail" class="flex flex-wrap gap-1 mt-1 items-center">
+            <input class="input input-bordered input-xs flex-1 min-w-48" name="summary" value="{{ nugget.summary }}" required>
+            <select class="select select-bordered select-xs" name="kind">
+              {% for k in kinds %}<option value="{{ k.value }}" {% if k == nugget.kind %}selected{% endif %}>{{ k.value }}</option>{% endfor %}
+            </select>
+            <input class="input input-bordered input-xs" type="date" name="due_date" value="{{ nugget.due_date.isoformat() if nugget.due_date else '' }}">
+            <button class="btn btn-xs" type="submit">Save</button>
+          </form>
+          <div class="flex flex-wrap gap-1 mt-1 items-center">
+            <form hx-post="/gui/nuggets/{{ nugget.id }}/move" hx-target="#task-{{ task.id }}-detail" class="flex gap-1 items-center">
+              <select class="select select-bordered select-xs max-w-56" name="task_id">
+                <option value="{{ task.id }}" selected>#{{ task.id }} {{ task.title }} (current)</option>
+                {% for other in open_tasks %}
+                {% if other.id != task.id %}<option value="{{ other.id }}">#{{ other.id }} {{ other.title }}</option>{% endif %}
+                {% endfor %}
+              </select>
+              <button class="btn btn-xs btn-ghost" type="submit">Move</button>
+            </form>
+            <button class="btn btn-xs btn-ghost" hx-post="/gui/nuggets/{{ nugget.id }}/detach" hx-target="#task-{{ task.id }}-detail" title="Remove from this task (back to the inbox)">Detach</button>
+          </div>
+        </div>
+        {% else %}
+        <p class="opacity-60">No nuggets attached yet — attach some from the <a class="link" href="/inbox">inbox</a>.</p>
+        {% endfor %}
+      </div>
+    </details>
   </div>
 
   <div>
-    <h3 class="font-semibold">Links</h3>
+    <h3 class="font-semibold">Jira tickets</h3>
     <div class="flex flex-wrap gap-2 mt-1 items-center">
-      {% for link in task.external_links %}
+      {% set jira_links = task.external_links | selectattr('system', 'equalto', 'jira') | list %}
+      {% for link in jira_links %}
       <span class="badge badge-outline gap-1">
-        {% if link.url %}<a class="link link-primary" href="{{ link.url }}">{{ link.system }}:{{ link.external_key }}</a>{% else %}{{ link.system }}:{{ link.external_key }}{% endif %}
+        {% if link.url %}<a class="link link-primary" href="{{ link.url }}">{{ link.external_key }}</a>{% else %}{{ link.external_key }}{% endif %}
         {% if link.external_status %}({{ link.external_status }}){% endif %}
-        <button class="btn btn-ghost btn-xs px-1" hx-post="/gui/tasks/{{ task.id }}/links/{{ link.id }}/delete" hx-target="#task-{{ task.id }}-detail" title="Remove link">✕</button>
       </span>
+      {% else %}
+      <span class="opacity-60">No Jira tickets — add or remove them when <a class="link" href="#" hx-get="/gui/tasks/{{ task.id }}/edit" hx-target="#task-{{ task.id }}" hx-swap="outerHTML">editing</a> the task.</span>
       {% endfor %}
-      <form hx-post="/gui/tasks/{{ task.id }}/links" hx-target="#task-{{ task.id }}-detail" class="flex gap-1 items-center">
-        <input class="input input-bordered input-xs w-40" name="jira_keys" placeholder="PROJ-123, PROJ-456">
-        <button class="btn btn-xs" type="submit">Add Jira</button>
-      </form>
     </div>
   </div>
 
