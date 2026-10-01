@@ -111,6 +111,18 @@ class MCPConfig(BaseModel):
     http_port: int = 8765
 
 
+class NuggetConfig(BaseModel):
+    """Defaults for the task created when attaching a nugget to a new task.
+
+    ``default_priority`` seeds the priority for a new task created from a
+    nugget whose kind isn't a deadline. ``default_assignee_self`` assigns the
+    new task to the owner (``is_self``) when the nugget has no owner.
+    """
+
+    default_priority: str = "normal"
+    default_assignee_self: bool = True
+
+
 class Config(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
@@ -123,6 +135,7 @@ class Config(BaseModel):
     jobs: JobsConfig = Field(default_factory=JobsConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
+    nugget: NuggetConfig = Field(default_factory=NuggetConfig)
     api_base_url: str = "http://localhost:8000"
 
     @property

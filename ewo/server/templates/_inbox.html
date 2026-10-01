@@ -2,7 +2,7 @@
 <div class="mt-4">
   {% if group.kind == 'task' %}
   <div class="flex flex-wrap items-center gap-2">
-    <h3 class="font-semibold text-sm">→ #{{ group.task.id }} {{ group.task.title }}</h3>
+    <h3 class="font-semibold text-sm min-w-0 break-words">→ #{{ group.task.id }} {{ group.task.title }}</h3>
     <form id="attach-group-{{ group.task.id }}" hx-post="/gui/inbox/attach-group" hx-target="#inbox-list" class="inline">
       <input type="hidden" name="task_id" value="{{ group.task.id }}">
       <input type="hidden" name="status" value="{{ filters.status }}">

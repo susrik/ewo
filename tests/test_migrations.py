@@ -101,3 +101,10 @@ def test_repair_drops_legacy_unique_and_keeps_rows(
             )
         )
     engine.dispose()
+
+
+def test_ui_preferences_table_created(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    url = f"sqlite:///{tmp_path / 'prefs.db'}"
+    _upgrade_head(tmp_path, monkeypatch, url)
+    inspector = sa.inspect(sa.create_engine(url))
+    assert "ui_preferences" in inspector.get_table_names()

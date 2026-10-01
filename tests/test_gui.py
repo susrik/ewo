@@ -69,6 +69,25 @@ def test_tasks_page_and_filters(client: TestClient) -> None:
     assert "No tasks match" in by_status.text
 
 
+def test_tasks_filter_saved_and_restored(client: TestClient) -> None:
+    closed = client.post("/api/tasks", json={"title": "closed"}).json()
+    client.patch(f"/api/tasks/{closed['id']}", json={"status": "done"})
+    client.post("/api/tasks", json={"title": "open one"})
+
+    # changing a filter persists it
+    client.get("/gui/tasks", params={"status": "done"})
+
+    # a fresh page load (and list fragment) with no params restores the saved filter
+    page = client.get("/tasks")
+    assert "closed" in page.text and "open one" not in page.text
+    tree = client.get("/gui/tasks")
+    assert "closed" in tree.text and "open one" not in tree.text
+
+    # an explicit filter still overrides the saved one
+    all_tasks = client.get("/gui/tasks", params={"status": "open"})
+    assert "open one" in all_tasks.text and "closed" not in all_tasks.text
+
+
 def test_task_fragment_and_create(client: TestClient) -> None:
     response = client.post(
         "/gui/tasks", data={"title": "from form", "priority": "high", "assignee_id": ""}
@@ -277,6 +296,40 @@ def test_tasks_organize_split_create_retitle(client: TestClient, session: Sessio
         "/gui/tasks/organize/retitle", data={"task_id": str(task["id"]), "title": "renamed"}
     )
     assert "renamed" in retitled.text
+
+
+def test_tasks_organize_batch_apply(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "mixed"}).json()
+
+    proposals_json = json.dumps(
+        [
+            {"kind": "retitle", "task_id": task["id"], "title": "renamed"},
+            {"kind": "merge", "into_id": task["id"], "from_id": task["id"]},
+        ]
+    )
+    applied = client.post(
+        "/gui/tasks/organize/apply",
+        data={"proposals_json": proposals_json, "selected": ["0"]},
+    )
+    assert "renamed" in applied.text
+    # only the checked proposal ran; the (unchecked) self-merge was skipped
+    assert client.get(f"/api/tasks/{task['id']}").json()["title"] == "renamed"
+
+    # selecting none is an inline error
+    none = client.post("/gui/tasks/organize/apply", data={"proposals_json": "[]"})
+    assert "no proposals selected" in none.text
+
+    # a checked proposal that fails is reported inline
+    bad = client.post(
+        "/gui/tasks/organize/apply",
+        data={
+            "proposals_json": json.dumps(
+                [{"kind": "merge", "into_id": task["id"], "from_id": task["id"]}]
+            ),
+            "selected": ["0"],
+        },
+    )
+    assert "into itself" in bad.text
 
 
 def test_task_merge_from_edit(client: TestClient, session: Session) -> None:
@@ -503,6 +556,41 @@ def test_task_split_parts_flow(client: TestClient, session: Session) -> None:
     assert len(client.get("/api/tasks").json()) == count
 
 
+def test_task_split_from_edit_panel(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "edit me"}).json()
+    first = _item(session, "part one")
+    client.post(f"/api/nuggets/{first}/attach", json={"task_id": task["id"]})
+
+    # hidden without an LLM key, visible with one
+    assert "Split (AI)" not in client.get(f"/gui/tasks/{task['id']}/edit").text
+    client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
+    edit_form = client.get(f"/gui/tasks/{task['id']}/edit")
+    assert "Split (AI)" in edit_form.text
+    assert 'name="panel" value="edit"' in edit_form.text
+
+    # an edit-panel error renders inline without re-including the detail panel
+    blank = client.post(
+        "/gui/tasks/organize/split/propose",
+        data={"task_id": str(task["id"]), "instructions": "  ", "panel": "edit"},
+    )
+    assert "Enter split instructions" in blank.text
+    assert "Split #" not in blank.text
+    assert "Sub-tasks" not in blank.text  # _task_detail.html was not re-included
+
+    from ewo.core.llm import FakeLLM
+
+    proposal_json = json.dumps(
+        {"mode": "children", "parts": [{"title": "half a", "nugget_ids": [first]}]}
+    )
+    client.app.state.llm = FakeLLM(responses=[proposal_json])  # type: ignore[attr-defined]
+    proposed = client.post(
+        "/gui/tasks/organize/split/propose",
+        data={"task_id": str(task["id"]), "instructions": "break it up", "panel": "edit"},
+    )
+    assert "half a" in proposed.text
+    assert 'name="proposal"' in proposed.text
+
+
 def test_related_grouping_flow(client: TestClient, session: Session) -> None:
     related_url = "/gui/tasks/organize/related"
 
@@ -725,12 +813,26 @@ def test_inbox_page_and_actions(client: TestClient, session: Session) -> None:
     assert "notes disabled in config" in page.text
     assert "Never scanned" in page.text
     assert "No suggested task" in page.text  # nothing matched yet
+    assert "break-words" in page.text  # unbroken text can't blow out the width
 
-    attached = client.post(
+    # choosing "new task" opens a pre-filled create dialog instead of attaching
+    dialog = client.post(
         f"/gui/nuggets/{item_id}/attach",
         data={"task_id": "", "priority": "high", "assignee_id": "", "due_date": "2026-10-01"},
     )
-    assert "attached" in attached.text and "task #" in attached.text
+    assert "New task from" in dialog.text and "chase Matti" in dialog.text
+    new_ids = [n["id"] for n in client.get("/api/nuggets", params={"status": "new"}).json()]
+    assert item_id in new_ids
+
+    # cancel returns to the plain attach form
+    cancel = client.get(f"/gui/nuggets/{item_id}/attach-form")
+    assert "→ new task" in cancel.text
+
+    created = client.post(
+        f"/gui/nuggets/{item_id}/create",
+        data={"title": "chase Matti", "priority": "high", "due_date": "2026-10-01"},
+    )
+    assert "attached" in created.text and "task #" in created.text
     task = client.get("/api/tasks").json()[0]
     assert task["title"] == "chase Matti" and task["priority"] == "high"
     assert task["external_links"][0]["external_key"] == f"eurohpc/x.md:34:{item_id}"
@@ -753,6 +855,7 @@ def test_inbox_attach_to_existing_and_group(client: TestClient, session: Session
     page = client.get("/inbox")
     assert f"→ #{task['id']} the topic" in page.text
     assert "Attach selected to #" in page.text
+    assert "✓ Attach to #" in page.text  # one-click shortcut appears when suggested
 
     # single attach to the existing task via the picker
     attached = client.post(f"/gui/nuggets/{item_id}/attach", data={"task_id": str(task["id"])})
@@ -831,11 +934,16 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
     response = client.post("/gui/inbox/create-group", data={"title": "alpha beta"})
     assert "Select at least one note" in response.text
 
+    # empty title → inline error
+    empty = client.post("/gui/inbox/create-group", data={"title": "   ", "nugget_ids": str(b)})
+    assert "New task needs a title" in empty.text
+
     # garbage LLM output surfaces inline, not a 500
     client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
-    assert "did not return valid inbox create proposals" in client.post(
-        "/gui/inbox/suggest-creates"
-    ).text
+    assert (
+        "did not return valid inbox create proposals"
+        in client.post("/gui/inbox/suggest-creates").text
+    )
 
 
 def test_inbox_suggest_button(client: TestClient, session: Session) -> None:

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ewo.core import nuggets, tasks
 from ewo.core.llm import LLMClient
+from ewo.core.people import NotFoundError
 from ewo.db.models import Nugget, NuggetStatus, Task, TaskSource, TaskStatus
 
 _MAX_PROPOSALS = 10
@@ -587,3 +588,35 @@ def apply_group(
     for child_id in child_ids:
         tasks.update_task(session, child_id, parent_id=parent.id)
     return parent
+
+
+def apply_proposals(
+    session: Session,
+    proposals: list[Proposal],
+    jira_base_url: str | None = None,
+) -> list[str]:
+    """Apply a list of organization proposals in order.
+
+    Each proposal is applied via its deterministic ``apply_*`` helper; a
+    failing proposal is skipped and reported rather than aborting the batch.
+    Returns the list of error strings (empty when everything applied).
+    """
+    errors: list[str] = []
+    for proposal in proposals:
+        try:
+            if proposal.kind == "merge":
+                apply_merge(session, proposal.into_id or 0, proposal.from_id or 0)
+            elif proposal.kind == "split":
+                apply_split(
+                    session,
+                    proposal.task_id or 0,
+                    proposal.nugget_ids,
+                    proposal.title or "",
+                )
+            elif proposal.kind == "create":
+                apply_create(session, proposal.title or "", proposal.nugget_ids, jira_base_url)
+            elif proposal.kind == "retitle":
+                tasks.update_task(session, proposal.task_id or 0, title=proposal.title or "")
+        except (ValueError, NotFoundError) as exc:
+            errors.append(f"{proposal.kind}: {exc}")
+    return errors

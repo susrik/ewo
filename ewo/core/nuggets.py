@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ewo.core import tasks
-from ewo.core.people import NotFoundError
+from ewo.core.people import NotFoundError, get_self
 from ewo.db.models import (
     ExternalLink,
     Nugget,
@@ -163,6 +163,14 @@ def _ensure_citation_link(session: Session, task: Task, nugget: Nugget) -> None:
     session.flush()
 
 
+def default_assignee(session: Session, use_self: bool) -> int | None:
+    """The owner's id when *use_self* and an ``is_self`` person exists."""
+    if not use_self:
+        return None
+    person = get_self(session)
+    return person.id if person is not None else None
+
+
 def ensure_jira_links(
     session: Session, task: Task, jira_keys: list[str], jira_base_url: str | None = None
 ) -> None:
@@ -185,13 +193,17 @@ def attach_nugget(
     assignee_id: int | None = None,
     due_date: date | None = None,
     title: str | None = None,
+    description: str | None = None,
+    default_assignee_id: int | None = None,
     jira_base_url: str | None = None,
 ) -> Task:
     """Attach a nugget to a task — an existing one (``task_id``) or a new one.
 
     Creating a new task mirrors the nugget's details onto it (title, excerpt,
-    owner, due date). Attaching to an existing task adds the nugget as an
-    update: citation + Jira links, no task-field changes.
+    owner, due date). ``description`` overrides the mirrored excerpt;
+    ``default_assignee_id`` is used when neither an explicit assignee nor a
+    nugget owner is available. Attaching to an existing task adds the nugget
+    as an update: citation + Jira links, no task-field changes.
     """
     nugget = get_nugget(session, nugget_id)
     if nugget.task_id is not None:
@@ -202,10 +214,12 @@ def attach_nugget(
         task = tasks.create_task(
             session,
             title=title or nugget.summary,
-            description=nugget.excerpt,
+            description=description if description is not None else nugget.excerpt,
             priority=priority,
             source=TaskSource.NOTES,
-            assignee_id=assignee_id if assignee_id is not None else nugget.owner_id,
+            assignee_id=(
+                assignee_id if assignee_id is not None else (nugget.owner_id or default_assignee_id)
+            ),
             due_date=due_date if due_date is not None else nugget.due_date,
         )
     _ensure_citation_link(session, task, nugget)

@@ -61,6 +61,28 @@ def test_attach_to_existing_task(session: Session) -> None:
     assert [x.external_key for x in attached.external_links if x.system == "jira"] == ["PROJ-1"]
 
 
+def test_attach_new_task_mirrors_nugget_and_defaults(session: Session) -> None:
+    owner = people.create_person(session, "me", is_self=True)
+    item = _nugget(session, "new work from notes")
+    # override the mirrored description and rely on the self-owner default
+    attached = nuggets.attach_nugget(
+        session,
+        item.id,
+        description="a curated description",
+        default_assignee_id=nuggets.default_assignee(session, use_self=True),
+    )
+    assert attached.title == "new work from notes"
+    assert attached.description == "a curated description"
+    assert attached.assignee_id == owner.id
+    assert attached.source == TaskSource.NOTES
+    assert nuggets.get_nugget(session, item.id).status == NuggetStatus.ATTACHED
+
+
+def test_default_assignee_off_when_no_self_or_disabled(session: Session) -> None:
+    assert nuggets.default_assignee(session, use_self=False) is None
+    assert nuggets.default_assignee(session, use_self=True) is None
+
+
 def test_attach_to_missing_task_404(session: Session) -> None:
     item = _nugget(session, "orphan")
     with pytest.raises(NotFoundError):
@@ -385,6 +407,30 @@ def test_apply_create(session: Session) -> None:
     assert task.title == "cluster topic"
     assert sorted(n.id for n in tasks.list_attached_nuggets(session, task.id)) == [a.id, b.id]
     assert nuggets.get_nugget(session, a.id).status == NuggetStatus.ATTACHED
+
+
+def test_apply_proposals_batch(session: Session) -> None:
+    into = tasks.create_task(session, "into")
+    loser = tasks.create_task(session, "loser")
+    item = _nugget(session, "a nugget")
+    nuggets.attach_nugget(session, item.id, task_id=loser.id)
+
+    proposals = [
+        task_organize.Proposal(kind="merge", into_id=into.id, from_id=loser.id),
+        task_organize.Proposal(kind="retitle", task_id=into.id, title="renamed"),
+    ]
+    errors = task_organize.apply_proposals(session, proposals)
+    assert errors == []
+    assert tasks.get_task(session, into.id).title == "renamed"
+    with pytest.raises(NotFoundError):
+        tasks.get_task(session, loser.id)
+
+
+def test_apply_proposals_reports_errors(session: Session) -> None:
+    task = tasks.create_task(session, "solo")
+    bad = [task_organize.Proposal(kind="merge", into_id=task.id, from_id=task.id)]
+    errors = task_organize.apply_proposals(session, bad)
+    assert errors and "into itself" in errors[0]
 
 
 # --- topic grouping ---

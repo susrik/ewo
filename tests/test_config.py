@@ -30,6 +30,8 @@ def test_defaults() -> None:
     assert config.notes.enabled is False
     assert config.notes.people_dir == "swd/people"
     assert config.notes.window_days == 60
+    assert config.nugget.default_priority == "normal"
+    assert config.nugget.default_assignee_self is True
 
 
 def test_notes_root_expands_user() -> None:

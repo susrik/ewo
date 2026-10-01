@@ -1,0 +1,24 @@
+<div id="nugget-{{ nugget.id }}" class="border rounded p-3">
+  <div class="text-sm opacity-70 mb-2">
+    New task from
+    <span class="font-medium">{{ nugget.summary }}</span>
+    <span class="text-xs font-mono">{{ nugget.path }}:{{ nugget.line }}</span>
+  </div>
+  <form hx-post="/gui/nuggets/{{ nugget.id }}/create" hx-target="#nugget-{{ nugget.id }}" hx-swap="outerHTML" class="grid gap-2">
+    <input class="input input-bordered input-sm" name="title" value="{{ prefill.title }}" required>
+    <textarea class="textarea textarea-bordered textarea-sm" name="description" rows="2" placeholder="Description">{{ prefill.description or "" }}</textarea>
+    <div class="flex flex-wrap gap-2 items-center">
+      <select class="select select-bordered select-sm" name="priority" title="Priority">
+        {% for p in priorities %}<option value="{{ p.value }}" {% if p == prefill.priority %}selected{% endif %}>{{ p.value }}</option>{% endfor %}
+      </select>
+      <select class="select select-bordered select-sm" name="assignee_id" title="Assignee">
+        <option value="" {% if not prefill.assignee_id %}selected{% endif %}>(unassigned)</option>
+        {% for person in people %}<option value="{{ person.id }}" {% if prefill.assignee_id == person.id %}selected{% endif %}>{{ person.name }}{% if person.is_self %} (me){% endif %}</option>{% endfor %}
+      </select>
+      <input class="input input-bordered input-sm" type="date" name="due_date" title="Due date" value="{{ prefill.due_date.isoformat() if prefill.due_date else '' }}">
+      <button class="btn btn-sm btn-primary" type="submit">Create task</button>
+      <button class="btn btn-sm btn-ghost" type="button"
+              hx-get="/gui/nuggets/{{ nugget.id }}/attach-form" hx-target="#nugget-{{ nugget.id }}" hx-swap="outerHTML">Cancel</button>
+    </div>
+  </form>
+</div>
