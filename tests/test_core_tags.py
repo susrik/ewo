@@ -41,6 +41,20 @@ def test_create_tag_sets_description(session: Session) -> None:
     assert tags_core.create_tag(session, "infra").description == "platform & ops"
 
 
+def test_tag_color(session: Session) -> None:
+    tag = tags_core.create_tag(session, "infra", color=" #ee7733 ")
+    assert tag.color == "#EE7733"
+
+    updated = tags_core.update_tag(session, tag.id, color="#117733")
+    assert updated.color == "#117733"
+
+    cleared = tags_core.update_tag(session, tag.id, color="   ")
+    assert cleared.color is None
+
+    with pytest.raises(ValueError, match="hex value"):
+        tags_core.update_tag(session, tag.id, color="red")
+
+
 def test_update_tag(session: Session) -> None:
     tag = tags_core.create_tag(session, "old", description="d")
     updated = tags_core.update_tag(session, tag.id, name="New Name")

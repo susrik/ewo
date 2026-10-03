@@ -70,5 +70,8 @@
   "nugget": {
     "default_priority": "normal",
     "default_assignee_self": true
+  },
+  "gui": {
+    "task_picker_max_visible": 10
   }
 }

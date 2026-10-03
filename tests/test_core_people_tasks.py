@@ -211,6 +211,67 @@ def test_list_tasks_multi_tag_filter(session: Session) -> None:
     assert tasks.list_tasks(session, tags=["nope"]) == []
 
 
+def test_sort_tasks(session: Session) -> None:
+    a = tasks.create_task(session, "alpha", priority=TaskPriority.HIGH)
+    b = tasks.create_task(session, "bravo", priority=TaskPriority.CRITICAL)
+    c = tasks.create_task(session, "charlie", priority=TaskPriority.HIGH)
+
+    rows = [a, b, c]
+    ordered = tasks.sort_tasks(rows)
+    assert [t.title for t in ordered] == ["bravo", "alpha", "charlie"]  # critical first, then title
+
+    by_title = tasks.sort_tasks(rows, sort_by="title")
+    assert [t.title for t in by_title] == ["alpha", "bravo", "charlie"]
+
+    reversed_ = tasks.sort_tasks(rows, sort_by="title", reverse=True)
+    assert [t.title for t in reversed_] == ["charlie", "bravo", "alpha"]
+
+    # unknown fields fall back to the default (priority then title)
+    assert [t.title for t in tasks.sort_tasks(rows, sort_by="bogus")] == [
+        "bravo",
+        "alpha",
+        "charlie",
+    ]
+
+
+def test_sort_tasks_missing_due_dates_last(session: Session) -> None:
+    dated = tasks.create_task(session, "dated", due_date=date(2026, 9, 15))
+    undated = tasks.create_task(session, "undated")
+
+    ordered = tasks.sort_tasks([undated, dated], sort_by="due_date")
+    assert [t.title for t in ordered] == ["dated", "undated"]
+
+
+def test_search_tasks(session: Session) -> None:
+    tasks.create_task(session, "fix exporter bug")
+    tasks.create_task(session, "export metrics")
+    closed = tasks.create_task(session, "export the old stuff")
+    tasks.update_task(session, closed.id, status=TaskStatus.DONE)
+
+    hit = tasks.search_tasks(session, "export")
+    assert {t.title for t in hit} == {"fix exporter bug", "export metrics"}  # closed excluded
+
+    assert tasks.search_tasks(session, "zzz") == []
+    assert tasks.search_tasks(session, "") == []
+
+    # % and _ are treated literally, not as LIKE wildcards
+    tasks.create_task(session, "100% done?")
+    assert [t.title for t in tasks.search_tasks(session, "100%")] == ["100% done?"]
+
+    # exclude_ids drops specific tasks
+    excluded = {t.id for t in hit}
+    assert all(
+        t.id not in excluded for t in tasks.search_tasks(session, "export", exclude_ids=excluded)
+    )
+
+    # results sort case-insensitively by name
+    tasks.create_task(session, "sort Zebra")
+    tasks.create_task(session, "sort apple")
+    tasks.create_task(session, "sort Banana")
+    ordered = [t.title for t in tasks.search_tasks(session, "sort")]
+    assert ordered == ["sort apple", "sort Banana", "sort Zebra"]
+
+
 def test_notes_and_links(session: Session) -> None:
     task = tasks.create_task(session, "with note")
     note = tasks.add_note(session, "a note", task_id=task.id)

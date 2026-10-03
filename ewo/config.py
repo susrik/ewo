@@ -111,6 +111,16 @@ class MCPConfig(BaseModel):
     http_port: int = 8765
 
 
+class GuiConfig(BaseModel):
+    """GUI tuning knobs.
+
+    ``task_picker_max_visible`` is how many result rows the unified task picker
+    shows before its matched-task list becomes scrollable.
+    """
+
+    task_picker_max_visible: int = 10
+
+
 class NuggetConfig(BaseModel):
     """Defaults for the task created when attaching a nugget to a new task.
 
@@ -136,6 +146,7 @@ class Config(BaseModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
     nugget: NuggetConfig = Field(default_factory=NuggetConfig)
+    gui: GuiConfig = Field(default_factory=GuiConfig)
     api_base_url: str = "http://localhost:8000"
 
     @property

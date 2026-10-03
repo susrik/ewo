@@ -63,11 +63,13 @@ class TagOut(ORMModel):
     id: int
     name: str
     description: str | None
+    color: str | None
 
 
 class TagUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    color: str | None = None
 
 
 class ExternalLinkOut(ORMModel):

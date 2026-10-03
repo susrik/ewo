@@ -35,6 +35,16 @@
         </form>
         {% endif %}
         <form hx-get="/gui/tasks" hx-target="#task-list" hx-trigger="change" class="flex flex-wrap gap-2">
+          <span class="text-sm self-center opacity-70">Sort:</span>
+          <select class="select select-bordered select-sm" name="sort">
+            {% for f in sort_fields %}<option value="{{ f }}" {% if filters.sort == f %}selected{% endif %}>{{ f | replace('_', ' ') }}</option>{% endfor %}
+          </select>
+          <select class="select select-bordered select-sm" name="sort2">
+            {% for f in sort_fields %}<option value="{{ f }}" {% if filters.sort2 == f %}selected{% endif %}>{{ f | replace('_', ' ') }}</option>{% endfor %}
+          </select>
+          <label class="label cursor-pointer gap-1 text-sm">
+            <input type="checkbox" class="checkbox checkbox-sm" name="reverse" value="true" {% if filters.reverse %}checked{% endif %}> reverse
+          </label>
           <select class="select select-bordered select-sm" name="status">
             <option value="">any open status</option>
             {% for s in statuses %}<option value="{{ s.value }}" {% if filters.status == s.value %}selected{% endif %}>{{ s.value }}</option>{% endfor %}

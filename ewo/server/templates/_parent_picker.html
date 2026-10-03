@@ -1,0 +1,12 @@
+{% if task.parent %}
+<div class="text-sm">
+  Parent: <a class="link link-hover break-words" href="/tasks?focus={{ task.parent.id }}">#{{ task.parent.id }} {{ task.parent.title }}</a>
+</div>
+{% else %}
+<div class="text-sm opacity-60">No parent task.</div>
+{% endif %}
+{% set action = 'parent' %}
+{% set task_id = task.id %}
+{% set nugget_id = '' %}
+{% set label = '(re)select parent task' %}
+{% include "_task_picker.html" %}

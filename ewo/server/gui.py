@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
-from ewo.core import nuggets, one_on_ones, people, preferences, task_organize, tasks
+from ewo.core import colors, nuggets, one_on_ones, people, preferences, task_organize, tasks
 from ewo.core import tags as tags_core
 from ewo.core.dashboard import build_dashboard
 from ewo.core.llm import LLMClient
@@ -42,11 +42,16 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.filters["pillbox_style"] = colors.label_swatch_to_css
 
 SessionDep = Annotated[Session, Depends(get_session)]
 ConfigDep = Annotated[Config, Depends(get_config)]
 
 _CLOSED = {TaskStatus.DONE, TaskStatus.DROPPED}
+
+# Safety cap for picker search results; the GUI lists all matches and scrolls
+# them (the visible-rows threshold is config.gui.task_picker_max_visible).
+_SEARCH_LIMIT = 200
 
 
 def _render(request: Request, name: str, context: dict[str, object]) -> HTMLResponse:
@@ -89,28 +94,6 @@ def index(request: Request, session: SessionDep, config: ConfigDep) -> HTMLRespo
 # --- tasks ---
 
 
-def _task_tree(rows: list[Task]) -> list[tuple[Task, int]]:
-    """(task, depth) pairs in display order: children right after their parent.
-
-    Tasks whose parent is filtered out are shown as roots.
-    """
-    by_parent: dict[int | None, list[Task]] = {}
-    for row in rows:
-        by_parent.setdefault(row.parent_id, []).append(row)
-    ids = {row.id for row in rows}
-    ordered: list[tuple[Task, int]] = []
-
-    def emit(task: Task, depth: int) -> None:
-        ordered.append((task, depth))
-        for child in by_parent.get(task.id, []):
-            emit(child, depth + 1)
-
-    for row in rows:
-        if row.parent_id is None or row.parent_id not in ids:
-            emit(row, 0)
-    return ordered
-
-
 def _descendant_ids(task: Task) -> set[int]:
     ids: set[int] = set()
     stack = list(task.children)
@@ -121,19 +104,10 @@ def _descendant_ids(task: Task) -> set[int]:
     return ids
 
 
-def _parent_candidates(session: Session, task: Task) -> list[Task]:
-    """Open tasks that may be *task*'s parent (not itself, not its descendants)."""
-    excluded = _descendant_ids(task) | {task.id}
-    candidates = [t for t in tasks.list_tasks(session) if t.id not in excluded]
-    if task.parent is not None and task.parent.id not in {t.id for t in candidates}:
-        candidates.insert(0, task.parent)
-    return candidates
-
-
-def _merge_candidates(session: Session, task: Task) -> list[Task]:
-    """Open tasks *task* may be merged into (not itself, not its descendants)."""
-    excluded = _descendant_ids(task) | {task.id}
-    return [t for t in tasks.list_tasks(session) if t.id not in excluded]
+def _search_exclusions(session: Session, task_id: int) -> set[int]:
+    """A task and its descendants — never offer these as a parent or child."""
+    task = tasks.get_task(session, task_id)
+    return _descendant_ids(task) | {task.id}
 
 
 def _task_context(
@@ -145,6 +119,9 @@ def _task_context(
     tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
+    sort: str = "priority",
+    sort2: str = "title",
+    reverse: bool = False,
 ) -> dict[str, object]:
     parsed_status = TaskStatus(status) if status else None
     selected_tags = [t for t in (tags or []) if t.strip()]
@@ -159,8 +136,9 @@ def _task_context(
     )
     if source:
         rows = [t for t in rows if t.source.value == source]
+    rows = tasks.sort_tasks(rows, sort, sort2, reverse)
     return {
-        "rows": _task_tree(rows),
+        "rows": rows,
         "filters": {
             "status": status,
             "assignee": assignee,
@@ -169,14 +147,29 @@ def _task_context(
             "tag_match": tag_match,
             "source": source,
             "include_closed": include_closed,
+            "sort": sort,
+            "sort2": sort2,
+            "reverse": reverse,
         },
         "people": people.list_people(session),
         "sources": list(TaskSource),
         "all_tags": tags_core.list_tags(session),
+        "sort_fields": list(tasks.SORT_FIELDS),
     }
 
 
-_FILTER_KEYS = ("status", "assignee", "tag", "tags", "tag_match", "source", "include_closed")
+_FILTER_KEYS = (
+    "status",
+    "assignee",
+    "tag",
+    "tags",
+    "tag_match",
+    "source",
+    "include_closed",
+    "sort",
+    "sort2",
+    "reverse",
+)
 _FILTER_PREF_KEY = "tasks_filter"
 
 
@@ -200,6 +193,7 @@ def tasks_page(
     tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
+    focus: str = "",
 ) -> HTMLResponse:
     saved = _saved_filter(request, session)
     if saved is not None:
@@ -210,6 +204,9 @@ def tasks_page(
         tag_match = str(saved.get("tag_match", tag_match))  # type: ignore[assignment]
         source = str(saved.get("source", source))
         include_closed = bool(saved.get("include_closed", include_closed))
+    # a focus link must land on its target even if it is closed
+    if _opt_int(focus) is not None:
+        include_closed = True
     context = _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed)
     context["page"] = "tasks"
     context["llm_enabled"] = bool(config.llm.api_key)
@@ -227,6 +224,9 @@ def task_list(
     tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
+    sort: str = "priority",
+    sort2: str = "title",
+    reverse: bool = False,
 ) -> HTMLResponse:
     saved = _saved_filter(request, session)
     if saved is not None:
@@ -237,7 +237,22 @@ def task_list(
         tag_match = str(saved.get("tag_match", tag_match))  # type: ignore[assignment]
         source = str(saved.get("source", source))
         include_closed = bool(saved.get("include_closed", include_closed))
-    context = _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed)
+        sort = str(saved.get("sort", sort))
+        sort2 = str(saved.get("sort2", sort2))
+        reverse = bool(saved.get("reverse", reverse))
+    context = _task_context(
+        session,
+        status,
+        assignee,
+        tag,
+        tags,
+        tag_match,
+        source,
+        include_closed,
+        sort,
+        sort2,
+        reverse,
+    )
     if any(key in request.query_params for key in _FILTER_KEYS):
         preferences.set_pref(session, _FILTER_PREF_KEY, cast(dict[str, object], context["filters"]))
     return _render(
@@ -567,6 +582,55 @@ def organize_split_apply(
     return _render(request, "_split_applied.html", context)
 
 
+@router.get("/gui/tasks/search", response_class=HTMLResponse)
+def task_search(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    q: str = "",
+    action: Literal["parent", "child", "merge", "attach", "move"] = "parent",
+    task_id: str = "",
+    nugget_id: str = "",
+) -> HTMLResponse:
+    """Substring search over open task titles, rendered as selectable rows.
+
+    ``action`` picks the select behaviour of each result row (re-parent, add
+    child, merge into, or attach/move a nugget) and the exclusion set applied
+    to the search. All matches are returned (up to a safety cap) and scrolled
+    in a list capped at ``config.gui.task_picker_max_visible`` visible rows."""
+
+    def _opt(v: str) -> int | None:
+        try:
+            return int(v)
+        except ValueError:
+            return None
+
+    tid = _opt(task_id) if task_id.strip() else None
+    nid = _opt(nugget_id) if nugget_id.strip() else None
+    exclude_ids: set[int] = set()
+    if action in ("parent", "child", "merge") and tid is not None:
+        exclude_ids = _search_exclusions(session, tid)
+    elif action == "move" and nid is not None:
+        try:
+            source = nuggets.get_nugget(session, nid)
+            if source.task_id is not None:
+                exclude_ids = {source.task_id}
+        except NotFoundError:
+            pass
+    results = tasks.search_tasks(session, q, exclude_ids=exclude_ids, limit=_SEARCH_LIMIT)
+    return _render(
+        request,
+        "_task_search_results.html",
+        {
+            "results": results,
+            "action": action,
+            "task_id": tid or "",
+            "nugget_id": nid or "",
+            "max_visible": max(1, config.gui.task_picker_max_visible),
+        },
+    )
+
+
 @router.get("/gui/tasks/{task_id}", response_class=HTMLResponse)
 def task_row(request: Request, task_id: int, session: SessionDep) -> HTMLResponse:
     return _render(request, "_task_row.html", {"task": tasks.get_task(session, task_id)})
@@ -592,7 +656,6 @@ def task_update(
     priority: Annotated[str, Form()],
     status: Annotated[str, Form()],
     assignee_id: Annotated[str, Form()] = "",
-    parent_id: Annotated[str, Form()] = "",
     start_date: Annotated[str, Form()] = "",
     due_date: Annotated[str, Form()] = "",
     tags: Annotated[str, Form()] = "",
@@ -607,7 +670,6 @@ def task_update(
         priority=TaskPriority(priority),
         status=TaskStatus(status),
         assignee_id=_opt_int(assignee_id),
-        parent_id=_opt_int(parent_id),
         start_date=_opt_date(start_date),
         due_date=_opt_date(due_date),
         description=description.strip() or None,
@@ -616,6 +678,32 @@ def task_update(
     if added and tags_core.descendant_ids(session, task_id):
         return _render(request, "_task_row_oob.html", {"task": task, "added_tags": added})
     return _render(request, "_task_row.html", {"task": task})
+
+
+@router.post("/gui/tasks/{task_id}/reparent", response_class=HTMLResponse)
+def task_reparent(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    parent_id: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """(Re)assign a task's parent immediately; re-render only its parent picker."""
+    tasks.update_task(session, task_id, parent_id=_opt_int(parent_id))
+    return _render(request, "_parent_picker.html", {"task": tasks.get_task(session, task_id)})
+
+
+@router.post("/gui/tasks/{task_id}/parent/new", response_class=HTMLResponse)
+def task_new_parent(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    parent_title: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Create a brand-new parent task and assign it; re-render the picker."""
+    if parent_title.strip():
+        parent = tasks.create_task(session, title=parent_title.strip())
+        tasks.update_task(session, task_id, parent_id=parent.id)
+    return _render(request, "_parent_picker.html", {"task": tasks.get_task(session, task_id)})
 
 
 @router.post("/gui/tasks/{task_id}/merge", response_class=HTMLResponse)
@@ -695,10 +783,34 @@ def set_task_status(
     return _render(request, "_task_row.html", {"task": task})
 
 
+@router.post("/gui/tasks/{task_id}/detach", response_class=HTMLResponse)
+def task_detach(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+) -> HTMLResponse:
+    """Remove a task's parent (detach from the parent's children list), then
+    re-render the former parent's detail panel."""
+    task = tasks.get_task(session, task_id)
+    parent_id = task.parent_id
+    tasks.update_task(session, task_id, parent_id=None)
+    if parent_id is None:
+        return _render(
+            request,
+            "_task_detail.html",
+            _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)),
+        )
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, parent_id, llm_enabled=bool(config.llm.api_key)),
+    )
+
+
 def _detail_context(session: Session, task_id: int, llm_enabled: bool = False) -> dict[str, object]:
     return {
         "task": tasks.get_task(session, task_id),
-        "open_tasks": tasks.list_tasks(session),
         "kinds": list(NuggetKind),
         "llm_enabled": llm_enabled,
     }
@@ -709,8 +821,6 @@ def _edit_context(session: Session, task_id: int, llm_enabled: bool = False) -> 
     return {
         "task": task,
         "people": people.list_people(session),
-        "parent_candidates": _parent_candidates(session, task),
-        "merge_candidates": _merge_candidates(session, task),
         "llm_enabled": llm_enabled,
     }
 
@@ -749,6 +859,34 @@ def task_add_child(
 ) -> HTMLResponse:
     if title.strip():
         tasks.create_task(session, title=title.strip(), parent_id=task_id)
+    return task_detail(request, task_id, session, config)
+
+
+@router.post("/gui/tasks/{task_id}/children/existing", response_class=HTMLResponse)
+def task_add_existing_child(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    child_id: Annotated[int, Form()],
+    confirmed: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Re-parent an existing task under ``task_id`` as a sub-task.
+
+    A child that already has a different parent first renders a confirmation
+    (naming that parent); confirming re-assigns it."""
+    container = tasks.get_task(session, task_id)
+    child = tasks.get_task(session, child_id)
+    if child.parent_id is not None and child.parent_id != task_id and not confirmed:
+        return _render(request, "_reparent_confirm.html", {"task": container, "child": child})
+    try:
+        tasks.update_task(session, child_id, parent_id=task_id)
+    except ValueError as exc:
+        return _render(
+            request,
+            "_reparent_confirm.html",
+            {"task": container, "child": child, "error": str(exc)},
+        )
     return task_detail(request, task_id, session, config)
 
 
@@ -1190,7 +1328,7 @@ def one_on_one_list(request: Request, session: SessionDep) -> HTMLResponse:
 
 def _labels_context(session: Session) -> dict[str, object]:
     rows = [{"tag": tag, "task_count": len(tag.tasks)} for tag in tags_core.list_tags(session)]
-    return {"rows": rows}
+    return {"rows": rows, "palette": colors.label_palette()}
 
 
 @router.get("/labels", response_class=HTMLResponse)
@@ -1211,14 +1349,19 @@ def create_label(
     session: SessionDep,
     name: Annotated[str, Form()],
     description: Annotated[str, Form()] = "",
+    color: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    tags_core.create_tag(session, name, description=description.strip() or None)
+    tags_core.create_tag(session, name, description=description.strip() or None, color=color)
     return label_list(request, session)
 
 
 @router.get("/gui/labels/{tag_id}/edit", response_class=HTMLResponse)
 def label_edit(request: Request, tag_id: int, session: SessionDep) -> HTMLResponse:
-    return _render(request, "_label_edit.html", {"tag": tags_core.get_tag(session, tag_id)})
+    return _render(
+        request,
+        "_label_edit.html",
+        {"tag": tags_core.get_tag(session, tag_id), "palette": colors.label_palette()},
+    )
 
 
 @router.post("/gui/labels/{tag_id}", response_class=HTMLResponse)
@@ -1228,8 +1371,9 @@ def label_update(
     session: SessionDep,
     name: Annotated[str, Form()],
     description: Annotated[str, Form()] = "",
+    color: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    tags_core.update_tag(session, tag_id, name=name, description=description)
+    tags_core.update_tag(session, tag_id, name=name, description=description, color=color)
     return label_list(request, session)
 
 

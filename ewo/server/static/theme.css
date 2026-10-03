@@ -1,0 +1,144 @@
+/*
+ * ewo colour palette.
+ *
+ * Based on Paul Tol's colour schemes ("Tol"): the muted and vibrant categorical
+ * sets, both colour-blind safe (https://personal.sron.nl/~pault/). The same
+ * swatches are mirrored as the label picker in ewo/core/colors.py.
+ *
+ * Priorities are semantic (not categorical): critical = red, high = orange,
+ * normal = none (transparent), low = blue. Each row is shaded with a very
+ * light tint so near-black text stays WCAG-readable.
+ */
+
+/* --- daisyUI theme recolour (Tol vibrant primary/secondary, Tol muted accent) --- */
+[data-theme="light"] {
+  --p: #0077BB;   /* Tol vibrant blue   */
+  --pc: #ffffff;
+  --s: #009988;   /* Tol vibrant teal   */
+  --sc: #ffffff;
+  --a: #AA4499;   /* Tol muted purple   */
+  --ac: #ffffff;
+  --n: #1e293b;   /* neutral slate      */
+  --nc: #ffffff;
+  --in: #88CCEE;  /* Tol muted light cyan */
+  --inc: #003048;
+  --su: #117733;  /* Tol muted green    */
+  --suc: #ffffff;
+  --wa: #EE7733;  /* Tol vibrant orange */
+  --wac: #241303;
+  --er: #882255;  /* Tol muted wine     */
+  --erc: #ffffff;
+
+  --b1: #ffffff;
+  --b2: #f7f9f9;
+  --b3: #eef1f1;
+  --bc: #1f2937;
+}
+
+/* --- priority row shading (very light tints) --- */
+.row-priority-critical > td,
+.row-priority-critical > td:first-child {
+  background-color: #f9e9e5; /* critical: light red   */
+}
+.row-priority-high > td,
+.row-priority-high > td:first-child {
+  background-color: #fdf0e9; /* high: light orange    */
+}
+.row-priority-low > td,
+.row-priority-low > td:first-child {
+  background-color: #e9f8fd; /* low: light blue       */
+}
+.row-priority-normal > td {
+  background-color: transparent; /* normal: no fill */
+}
+
+/* --- priority pills (full/dark main colours) --- */
+.priority-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  padding: 0.05rem 0.55rem;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.priority-critical { background-color: #CC3311; color: #ffffff; }
+.priority-high     { background-color: #EE7733; color: #241303; }
+.priority-normal   { background-color: #888888; color: #ffffff; }
+.priority-low      { background-color: #33BBEE; color: #003048; }
+
+/* --- status colours --- */
+.status-open        { color: #888888; }
+.status-in_progress { color: #0077BB; }
+.status-blocked     { color: #882255; }
+.status-done        { color: #117733; }
+.status-dropped     { color: #999933; }
+
+/* --- label pillbox --- */
+.pillbox {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  padding: 0.05rem 0.55rem;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.pillbox-no-color {
+  background-color: var(--b2);
+  color: var(--bc);
+  border: 1px solid var(--b3);
+}
+
+/* --- label colour picker (popup grid) --- */
+.color-swatch {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 0.35rem;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  padding: 0;
+}
+.color-swatch:hover {
+  outline: 2px solid var(--p);
+  outline-offset: 1px;
+}
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1.4rem);
+  gap: 0.25rem;
+}
+/* --- unified task picker (<details>-based, no JS) --- */
+details.task-picker {
+  position: relative;
+  display: inline-block;
+}
+details.task-picker summary {
+  list-style: none;
+  cursor: pointer;
+}
+details.task-picker summary::-webkit-details-marker {
+  display: none;
+}
+details.task-picker > .dropdown-content {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  margin-top: 0.25rem;
+  z-index: 30;
+  background-color: var(--b1, #ffffff);
+  border: 1px solid var(--b3, #eef1f1);
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(0.25rem);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+}
+details.task-picker[open] > .dropdown-content {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}

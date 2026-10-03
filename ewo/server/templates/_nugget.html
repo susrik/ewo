@@ -19,13 +19,12 @@
     <button class="btn btn-xs btn-primary" type="submit" title="Attach immediately to the suggested task">✓ Attach to #{{ suggested.id }} {{ suggested.title }}</button>
   </form>
   {% endif %}
-  <form hx-post="/gui/nuggets/{{ nugget.id }}/attach" hx-target="#nugget-{{ nugget.id }}" hx-swap="outerHTML" class="flex flex-wrap gap-2 mt-2 items-center">
-    <select class="select select-bordered select-xs max-w-64" name="task_id" title="Task to attach to">
-      <option value="">→ new task</option>
-      {% for task in open_tasks %}
-      <option value="{{ task.id }}" {% if nugget.suggested_task_id == task.id %}selected{% endif %}>#{{ task.id }} {{ task.title }}</option>
-      {% endfor %}
-    </select>
+  <form class="flex flex-wrap gap-2 mt-2 items-center">
+    {% set action = 'attach' %}
+    {% set task_id = '' %}
+    {% set nugget_id = nugget.id %}
+    {% set label = 'Attach to task…' %}
+    {% include "_task_picker.html" %}
     <select class="select select-bordered select-xs" name="priority">
       {% for p in priorities %}<option value="{{ p.value }}" {% if (p.value == 'high' and nugget.kind.value == 'deadline') or (p.value == 'normal' and nugget.kind.value != 'deadline') %}selected{% endif %}>{{ p.value }}</option>{% endfor %}
     </select>
@@ -34,7 +33,6 @@
       {% for person in people %}<option value="{{ person.id }}">{{ person.name }}{% if person.is_self %} (me){% endif %}</option>{% endfor %}
     </select>
     <input class="input input-bordered input-xs" type="date" name="due_date" value="{{ nugget.due_date.isoformat() if nugget.due_date else '' }}">
-    <button class="btn btn-xs btn-primary" type="submit">Attach</button>
     <button class="btn btn-xs" type="button" hx-post="/gui/nuggets/{{ nugget.id }}/done" hx-target="#nugget-{{ nugget.id }}" hx-swap="outerHTML">Already done</button>
     <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/nuggets/{{ nugget.id }}/dismiss" hx-target="#nugget-{{ nugget.id }}" hx-swap="outerHTML">Dismiss</button>
   </form>

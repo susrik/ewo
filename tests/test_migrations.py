@@ -72,6 +72,16 @@ def test_repair_drops_legacy_unique_and_keeps_rows(
     with engine.begin() as conn:
         conn.execute(sa.text("CREATE TABLE tasks (id INTEGER NOT NULL, PRIMARY KEY (id))"))
         conn.execute(sa.text(_LINKS_DDL))
+        # tags exists at the stamped revision so the later tag-color migration can
+        # add its column; only the pre-colour columns are materialised here.
+        conn.execute(
+            sa.text(
+                "CREATE TABLE tags ("
+                " id INTEGER NOT NULL PRIMARY KEY,"
+                " name VARCHAR(100) NOT NULL,"
+                " description TEXT)"
+            )
+        )
         conn.execute(sa.text("INSERT INTO tasks (id) VALUES (1), (2)"))
         conn.execute(
             sa.text(

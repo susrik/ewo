@@ -1,0 +1,15 @@
+<div class="label-color-picker dropdown">
+  <div tabindex="0" role="button" class="btn btn-sm btn-ghost flex items-center gap-2">
+    <span class="color-swatch current-swatch" style="background-color: {{ color_value or 'transparent' }}"></span>
+    <span class="text-xs">color</span>
+  </div>
+  <div tabindex="0" class="dropdown-content z-20 p-2 shadow bg-base-100 rounded-box">
+    <input type="hidden" name="color" value="{{ color_value or '' }}">
+    <button type="button" class="btn btn-xs mb-1" onclick="this.closest('.label-color-picker').querySelector('input[name=color]').value=''; this.closest('.label-color-picker').querySelector('.current-swatch').style.backgroundColor='transparent'">None</button>
+    <div class="color-grid">
+      {% for c in palette %}
+      <button type="button" class="color-swatch" style="background-color: {{ c }}" title="{{ c }}" onclick="this.closest('.label-color-picker').querySelector('input[name=color]').value='{{ c }}'; this.closest('.label-color-picker').querySelector('.current-swatch').style.backgroundColor='{{ c }}'"></button>
+      {% endfor %}
+    </div>
+  </div>
+</div>

@@ -1,0 +1,43 @@
+{% set _rid = ('nugget-' ~ nugget_id) if action in ('attach', 'move') else ('task-' ~ task_id) %}
+{% set picker_id = _rid ~ '-' ~ action %}
+<details class="dropdown task-picker">
+  <summary tabindex="0" role="button" class="btn btn-sm btn-outline flex items-center gap-1">{{ label | safe }} <span class="opacity-60">▾</span></summary>
+  <div class="dropdown-content z-20 w-80 p-2 shadow bg-base-100 rounded-box">
+    <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
+           hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
+           hx-target="#{{ picker_id }}-results"
+           hx-vals='{"action": "{{ action }}", "task_id": "{{ task_id }}", "nugget_id": "{{ nugget_id }}"}'
+           autocomplete="off">
+    <div id="{{ picker_id }}-results" class="mt-1"></div>
+    {% if action == 'parent' %}
+    <div class="flex gap-1 mt-1">
+      <input id="{{ picker_id }}-new-title" class="input input-bordered input-xs flex-1"
+             name="parent_title" placeholder="New parent title…"
+             hx-post="/gui/tasks/{{ task_id }}/parent/new"
+             hx-trigger="keyup[key=='Enter']" hx-target="#task-{{ task_id }}-parent-picker">
+      <button type="button" class="btn btn-xs" title="Create and assign"
+              hx-post="/gui/tasks/{{ task_id }}/parent/new"
+              hx-include="#{{ picker_id }}-new-title"
+              hx-target="#task-{{ task_id }}-parent-picker">＋</button>
+    </div>
+    <button type="button" class="btn btn-xs btn-ghost mt-1"
+            hx-post="/gui/tasks/{{ task_id }}/reparent" hx-vals='{"parent_id": ""}'
+            hx-target="#task-{{ task_id }}-parent-picker">remove parent</button>
+    {% elif action == 'child' %}
+    <div class="flex gap-1 mt-1">
+      <input id="{{ picker_id }}-new-title" class="input input-bordered input-xs flex-1"
+             name="title" placeholder="New sub-task title…"
+             hx-post="/gui/tasks/{{ task_id }}/children"
+             hx-trigger="keyup[key=='Enter']" hx-target="#task-{{ task_id }}-detail">
+      <button type="button" class="btn btn-xs" title="Create sub-task"
+              hx-post="/gui/tasks/{{ task_id }}/children"
+              hx-include="#{{ picker_id }}-new-title"
+              hx-target="#task-{{ task_id }}-detail">＋</button>
+    </div>
+    {% elif action == 'attach' %}
+    <button type="button" class="btn btn-xs btn-ghost w-full justify-start mt-1"
+            hx-post="/gui/nuggets/{{ nugget_id }}/attach" hx-vals='{"task_id": ""}'
+            hx-target="#nugget-{{ nugget_id }}" hx-swap="outerHTML">＋ New task…</button>
+    {% endif %}
+  </div>
+</details>

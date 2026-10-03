@@ -1,5 +1,5 @@
 <tr id="task-{{ task.id }}" class="bg-base-200">
-  <td colspan="6">
+  <td colspan="7">
     <form hx-post="/gui/tasks/{{ task.id }}" hx-target="#task-{{ task.id }}" hx-swap="outerHTML" class="grid gap-2">
       <input class="input input-bordered input-sm" name="title" value="{{ task.title }}" required>
       <textarea class="textarea textarea-bordered textarea-sm" name="description" rows="2" placeholder="Description">{{ task.description or "" }}</textarea>
@@ -14,10 +14,9 @@
           <option value="">(unassigned)</option>
           {% for person in people %}<option value="{{ person.id }}" {% if task.assignee_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
         </select>
-        <select class="select select-bordered select-sm max-w-56" name="parent_id" title="Make this a sub-task of…">
-          <option value="">(no parent)</option>
-          {% for candidate in parent_candidates %}<option value="{{ candidate.id }}" {% if task.parent_id == candidate.id %}selected{% endif %}>#{{ candidate.id }} {{ candidate.title }}</option>{% endfor %}
-        </select>
+        <div id="task-{{ task.id }}-parent-picker">
+          {% include "_parent_picker.html" %}
+        </div>
         <input class="input input-bordered input-sm" type="date" name="start_date" title="Start date" value="{{ task.start_date.isoformat() if task.start_date else '' }}">
         <input class="input input-bordered input-sm" type="date" name="due_date" title="Due date" value="{{ task.due_date.isoformat() if task.due_date else '' }}">
         <input class="input input-bordered input-sm" name="tags" placeholder="tags" value="{{ task.tags | map(attribute='name') | join(', ') }}">
@@ -31,14 +30,13 @@
         <span class="font-semibold text-xs">Jira tickets:</span>
         {% include "_task_jira.html" %}
       </div>
-      <form hx-post="/gui/tasks/{{ task.id }}/merge" hx-target="#task-list" class="flex gap-2 items-center"
-            hx-confirm="This deletes this task, moving its nuggets, notes, sub-tasks and links onto the selected task. Continue?">
-        <select class="select select-bordered select-sm max-w-64" name="into_id" title="Merge this task into another" required>
-          <option value="">Merge this task into…</option>
-          {% for candidate in merge_candidates %}<option value="{{ candidate.id }}">#{{ candidate.id }} {{ candidate.title }}</option>{% endfor %}
-        </select>
-        <button class="btn btn-sm btn-warning" type="submit">Merge</button>
-      </form>
+      <div class="flex items-center">
+        {% set action = 'merge' %}
+        {% set task_id = task.id %}
+        {% set nugget_id = '' %}
+        {% set label = 'Merge this task into…' %}
+        {% include "_task_picker.html" %}
+      </div>
       {% if llm_enabled %}
       <div>
         <div class="font-semibold text-xs mb-1">Split (AI)</div>

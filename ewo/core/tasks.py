@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ewo.core.people import NotFoundError
@@ -96,6 +97,95 @@ def get_task(session: Session, task_id: int) -> Task:
     if task is None:
         raise NotFoundError(f"task {task_id} not found")
     return task
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so user search text is matched literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def search_tasks(
+    session: Session, query: str, exclude_ids: Iterable[int] = (), limit: int = 20
+) -> list[Task]:
+    """Open tasks whose title contains ``query`` (case-insensitive substring).
+
+    ``exclude_ids`` drops tasks that must not be offered (e.g. a task itself
+    and its descendants when choosing a parent/child)."""
+    q = query.strip()
+    if not q:
+        return []
+    pattern = f"%{_escape_like(q)}%"
+    stmt = (
+        select(Task)
+        .options(selectinload(Task.tags), selectinload(Task.assignee))
+        .where(Task.title.ilike(pattern, escape="\\"))
+        .where(Task.status.not_in([TaskStatus.DONE, TaskStatus.DROPPED]))
+    )
+    if exclude_ids:
+        stmt = stmt.where(Task.id.not_in(exclude_ids))
+    return list(session.scalars(stmt.order_by(func.lower(Task.title)).limit(limit)))
+
+
+_PRIORITY_RANK = {
+    TaskPriority.CRITICAL: 0,
+    TaskPriority.HIGH: 1,
+    TaskPriority.NORMAL: 2,
+    TaskPriority.LOW: 3,
+}
+
+SORT_FIELDS = (
+    "priority",
+    "title",
+    "status",
+    "due_date",
+    "assignee",
+    "source",
+    "created_at",
+    "updated_at",
+)
+
+
+def _sort_key(task: Task, field: str) -> object:
+    """A comparable value for one sort field. Missing values sort last
+    (ascending) so critical/earliest items float to the top."""
+    if field == "priority":
+        return _PRIORITY_RANK[task.priority]
+    if field == "title":
+        return task.title.lower()
+    if field == "status":
+        return task.status.value
+    if field == "due_date":
+        return (task.due_date is None, task.due_date)
+    if field == "assignee":
+        return (task.assignee is None, task.assignee.name.lower() if task.assignee else "")
+    if field == "source":
+        return task.source.value
+    if field == "created_at":
+        return task.created_at
+    if field == "updated_at":
+        return task.updated_at
+    return task.id
+
+
+def sort_tasks(
+    rows: list[Task],
+    sort_by: str | None = "priority",
+    sort_by_2: str | None = "title",
+    reverse: bool = False,
+) -> list[Task]:
+    """Stable two-key sort of a flat task list.
+
+    Unknown/none fields fall back to the default (priority, then title).
+    ``reverse`` flips both keys. Priority uses its own rank (critical first)
+    rather than alphabetical ordering.
+    """
+    primary = sort_by if sort_by in SORT_FIELDS else "priority"
+    secondary = sort_by_2 if sort_by_2 in SORT_FIELDS else "title"
+    return sorted(
+        rows,
+        key=lambda t: (_sort_key(t, primary), _sort_key(t, secondary)),
+        reverse=reverse,
+    )
 
 
 def list_tasks(
