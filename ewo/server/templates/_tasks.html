@@ -1,12 +1,12 @@
 <table class="table">
   <thead>
-    <tr><th>Task</th><th>Assignee</th><th>Priority</th><th>Due</th><th>Status</th><th></th></tr>
+    <tr><th>Task</th><th>Labels</th><th>Assignee</th><th>Priority</th><th>Due</th><th>Status</th><th></th></tr>
   </thead>
   <tbody>
-    {% for task, depth in rows %}
+    {% for task in rows %}
     {% include "_task_row.html" %}
     {% else %}
-    <tr><td colspan="6" class="opacity-60">No tasks match.</td></tr>
+    <tr><td colspan="7" class="opacity-60">No tasks match.</td></tr>
     {% endfor %}
   </tbody>
 </table>

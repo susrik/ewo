@@ -98,6 +98,68 @@ def get_task(session: Session, task_id: int) -> Task:
     return task
 
 
+_PRIORITY_RANK = {
+    TaskPriority.CRITICAL: 0,
+    TaskPriority.HIGH: 1,
+    TaskPriority.NORMAL: 2,
+    TaskPriority.LOW: 3,
+}
+
+SORT_FIELDS = (
+    "priority",
+    "title",
+    "status",
+    "due_date",
+    "assignee",
+    "source",
+    "created_at",
+    "updated_at",
+)
+
+
+def _sort_key(task: Task, field: str) -> object:
+    """A comparable value for one sort field. Missing values sort last
+    (ascending) so critical/earliest items float to the top."""
+    if field == "priority":
+        return _PRIORITY_RANK[task.priority]
+    if field == "title":
+        return task.title.lower()
+    if field == "status":
+        return task.status.value
+    if field == "due_date":
+        return (task.due_date is None, task.due_date)
+    if field == "assignee":
+        return (task.assignee is None, task.assignee.name.lower() if task.assignee else "")
+    if field == "source":
+        return task.source.value
+    if field == "created_at":
+        return task.created_at
+    if field == "updated_at":
+        return task.updated_at
+    return task.id
+
+
+def sort_tasks(
+    rows: list[Task],
+    sort_by: str | None = "priority",
+    sort_by_2: str | None = "title",
+    reverse: bool = False,
+) -> list[Task]:
+    """Stable two-key sort of a flat task list.
+
+    Unknown/none fields fall back to the default (priority, then title).
+    ``reverse`` flips both keys. Priority uses its own rank (critical first)
+    rather than alphabetical ordering.
+    """
+    primary = sort_by if sort_by in SORT_FIELDS else "priority"
+    secondary = sort_by_2 if sort_by_2 in SORT_FIELDS else "title"
+    return sorted(
+        rows,
+        key=lambda t: (_sort_key(t, primary), _sort_key(t, secondary)),
+        reverse=reverse,
+    )
+
+
 def list_tasks(
     session: Session,
     status: TaskStatus | None = None,

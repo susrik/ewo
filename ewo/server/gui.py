@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
-from ewo.core import nuggets, one_on_ones, people, preferences, task_organize, tasks
+from ewo.core import colors, nuggets, one_on_ones, people, preferences, task_organize, tasks
 from ewo.core import tags as tags_core
 from ewo.core.dashboard import build_dashboard
 from ewo.core.llm import LLMClient
@@ -42,6 +42,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.filters["pillbox_style"] = colors.label_swatch_to_css
 
 SessionDep = Annotated[Session, Depends(get_session)]
 ConfigDep = Annotated[Config, Depends(get_config)]
@@ -89,28 +90,6 @@ def index(request: Request, session: SessionDep, config: ConfigDep) -> HTMLRespo
 # --- tasks ---
 
 
-def _task_tree(rows: list[Task]) -> list[tuple[Task, int]]:
-    """(task, depth) pairs in display order: children right after their parent.
-
-    Tasks whose parent is filtered out are shown as roots.
-    """
-    by_parent: dict[int | None, list[Task]] = {}
-    for row in rows:
-        by_parent.setdefault(row.parent_id, []).append(row)
-    ids = {row.id for row in rows}
-    ordered: list[tuple[Task, int]] = []
-
-    def emit(task: Task, depth: int) -> None:
-        ordered.append((task, depth))
-        for child in by_parent.get(task.id, []):
-            emit(child, depth + 1)
-
-    for row in rows:
-        if row.parent_id is None or row.parent_id not in ids:
-            emit(row, 0)
-    return ordered
-
-
 def _descendant_ids(task: Task) -> set[int]:
     ids: set[int] = set()
     stack = list(task.children)
@@ -145,6 +124,9 @@ def _task_context(
     tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
+    sort: str = "priority",
+    sort2: str = "title",
+    reverse: bool = False,
 ) -> dict[str, object]:
     parsed_status = TaskStatus(status) if status else None
     selected_tags = [t for t in (tags or []) if t.strip()]
@@ -159,8 +141,9 @@ def _task_context(
     )
     if source:
         rows = [t for t in rows if t.source.value == source]
+    rows = tasks.sort_tasks(rows, sort, sort2, reverse)
     return {
-        "rows": _task_tree(rows),
+        "rows": rows,
         "filters": {
             "status": status,
             "assignee": assignee,
@@ -169,14 +152,29 @@ def _task_context(
             "tag_match": tag_match,
             "source": source,
             "include_closed": include_closed,
+            "sort": sort,
+            "sort2": sort2,
+            "reverse": reverse,
         },
         "people": people.list_people(session),
         "sources": list(TaskSource),
         "all_tags": tags_core.list_tags(session),
+        "sort_fields": list(tasks.SORT_FIELDS),
     }
 
 
-_FILTER_KEYS = ("status", "assignee", "tag", "tags", "tag_match", "source", "include_closed")
+_FILTER_KEYS = (
+    "status",
+    "assignee",
+    "tag",
+    "tags",
+    "tag_match",
+    "source",
+    "include_closed",
+    "sort",
+    "sort2",
+    "reverse",
+)
 _FILTER_PREF_KEY = "tasks_filter"
 
 
@@ -227,6 +225,9 @@ def task_list(
     tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
+    sort: str = "priority",
+    sort2: str = "title",
+    reverse: bool = False,
 ) -> HTMLResponse:
     saved = _saved_filter(request, session)
     if saved is not None:
@@ -237,7 +238,22 @@ def task_list(
         tag_match = str(saved.get("tag_match", tag_match))  # type: ignore[assignment]
         source = str(saved.get("source", source))
         include_closed = bool(saved.get("include_closed", include_closed))
-    context = _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed)
+        sort = str(saved.get("sort", sort))
+        sort2 = str(saved.get("sort2", sort2))
+        reverse = bool(saved.get("reverse", reverse))
+    context = _task_context(
+        session,
+        status,
+        assignee,
+        tag,
+        tags,
+        tag_match,
+        source,
+        include_closed,
+        sort,
+        sort2,
+        reverse,
+    )
     if any(key in request.query_params for key in _FILTER_KEYS):
         preferences.set_pref(session, _FILTER_PREF_KEY, cast(dict[str, object], context["filters"]))
     return _render(
@@ -693,6 +709,31 @@ def set_task_status(
 ) -> HTMLResponse:
     task = tasks.update_task(session, task_id, status=TaskStatus(status))
     return _render(request, "_task_row.html", {"task": task})
+
+
+@router.post("/gui/tasks/{task_id}/detach", response_class=HTMLResponse)
+def task_detach(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+) -> HTMLResponse:
+    """Remove a task's parent (detach from the parent's children list), then
+    re-render the former parent's detail panel."""
+    task = tasks.get_task(session, task_id)
+    parent_id = task.parent_id
+    tasks.update_task(session, task_id, parent_id=None)
+    if parent_id is None:
+        return _render(
+            request,
+            "_task_detail.html",
+            _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)),
+        )
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, parent_id, llm_enabled=bool(config.llm.api_key)),
+    )
 
 
 def _detail_context(session: Session, task_id: int, llm_enabled: bool = False) -> dict[str, object]:
@@ -1190,7 +1231,7 @@ def one_on_one_list(request: Request, session: SessionDep) -> HTMLResponse:
 
 def _labels_context(session: Session) -> dict[str, object]:
     rows = [{"tag": tag, "task_count": len(tag.tasks)} for tag in tags_core.list_tags(session)]
-    return {"rows": rows}
+    return {"rows": rows, "palette": colors.label_palette()}
 
 
 @router.get("/labels", response_class=HTMLResponse)
@@ -1211,14 +1252,19 @@ def create_label(
     session: SessionDep,
     name: Annotated[str, Form()],
     description: Annotated[str, Form()] = "",
+    color: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    tags_core.create_tag(session, name, description=description.strip() or None)
+    tags_core.create_tag(session, name, description=description.strip() or None, color=color)
     return label_list(request, session)
 
 
 @router.get("/gui/labels/{tag_id}/edit", response_class=HTMLResponse)
 def label_edit(request: Request, tag_id: int, session: SessionDep) -> HTMLResponse:
-    return _render(request, "_label_edit.html", {"tag": tags_core.get_tag(session, tag_id)})
+    return _render(
+        request,
+        "_label_edit.html",
+        {"tag": tags_core.get_tag(session, tag_id), "palette": colors.label_palette()},
+    )
 
 
 @router.post("/gui/labels/{tag_id}", response_class=HTMLResponse)
@@ -1228,8 +1274,9 @@ def label_update(
     session: SessionDep,
     name: Annotated[str, Form()],
     description: Annotated[str, Form()] = "",
+    color: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    tags_core.update_tag(session, tag_id, name=name, description=description)
+    tags_core.update_tag(session, tag_id, name=name, description=description, color=color)
     return label_list(request, session)
 
 

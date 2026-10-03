@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from ewo.config import Config, load_config
 from ewo.core.llm import LLMClient, OpenAILLM
@@ -16,6 +18,8 @@ from ewo.jobs.registry import mark_interrupted_runs, registry
 from ewo.jobs.scheduler import build_scheduler
 from ewo.server.api import router as api_router
 from ewo.server.gui import router as gui_router
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @contextlib.asynccontextmanager
@@ -52,4 +56,5 @@ def create_app(config: Config | None = None, llm: LLMClient | None = None) -> Fa
     app.state.job_registry = registry
     app.include_router(api_router)
     app.include_router(gui_router)
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     return app

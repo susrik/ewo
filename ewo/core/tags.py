@@ -7,16 +7,32 @@ normalized (stripped, lowercased) name.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ewo.core.people import NotFoundError
 from ewo.db.models import Tag, Task
 
+_HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
 
 def normalize_name(name: str) -> str:
     """Canonical form of a tag name: stripped and lowercased."""
     return name.strip().lower()
+
+
+def normalize_color(color: str | None) -> str | None:
+    """Validate/uppercase a hex color; blank is allowed and means "no color"."""
+    if color is None:
+        return None
+    stripped = color.strip()
+    if not stripped:
+        return None
+    if not _HEX_COLOR.match(stripped):
+        raise ValueError("label color must be a hex value like #EE7733")
+    return stripped.upper()
 
 
 def _get_or_create_tags(session: Session, names: list[str]) -> list[Tag]:
@@ -44,17 +60,23 @@ def list_tags(session: Session) -> list[Tag]:
     return list(session.scalars(select(Tag).order_by(Tag.name)))
 
 
-def create_tag(session: Session, name: str, description: str | None = None) -> Tag:
-    """Get-or-create a tag by normalized name; a given description is set."""
+def create_tag(
+    session: Session, name: str, description: str | None = None, color: str | None = None
+) -> Tag:
+    """Get-or-create a tag by normalized name; a given description/color is set."""
     normalized = normalize_name(name)
     if not normalized:
         raise ValueError("tag name cannot be empty")
+    resolved_color = normalize_color(color)
     tag = session.scalars(select(Tag).where(Tag.name == normalized)).first()
     if tag is None:
-        tag = Tag(name=normalized, description=description)
+        tag = Tag(name=normalized, description=description, color=resolved_color)
         session.add(tag)
-    elif description is not None:
-        tag.description = description
+    else:
+        if description is not None:
+            tag.description = description
+        if color is not None:
+            tag.color = resolved_color
     session.commit()
     return tag
 
@@ -65,11 +87,12 @@ def update_tag(
     *,
     name: str | None = None,
     description: str | None = None,
+    color: str | None = None,
 ) -> Tag:
-    """Rename and/or re-describe a tag.
+    """Rename, re-describe and/or recolor a tag.
 
-    ``None`` leaves a field unchanged; a blank description clears it.
-    Renaming to another tag's (normalized) name raises ValueError.
+    ``None`` leaves a field unchanged; a blank description/color clears the
+    field. Renaming to another tag's (normalized) name raises ValueError.
     """
     tag = get_tag(session, tag_id)
     if name is not None:
@@ -82,6 +105,8 @@ def update_tag(
         tag.name = normalized
     if description is not None:
         tag.description = description.strip() or None
+    if color is not None:
+        tag.color = normalize_color(color)
     session.commit()
     return tag
 

@@ -3,7 +3,11 @@
   <tbody>
     {% for row in rows %}
     <tr id="label-{{ row.tag.id }}">
-      <td><a class="link link-hover font-medium" href="/tasks?tags={{ row.tag.name | urlencode }}">{{ row.tag.name }}</a></td>
+      <td>
+        <a class="link link-hover font-medium" href="/tasks?tags={{ row.tag.name | urlencode }}">
+          <span class="pillbox{% if not row.tag.color %} pillbox-no-color{% endif %}" {% if row.tag.color %}style="{{ row.tag.color | pillbox_style }}"{% endif %}>{{ row.tag.name }}</span>
+        </a>
+      </td>
       <td class="text-sm">{{ row.tag.description or "—" }}</td>
       <td>{{ row.task_count }}</td>
       <td class="whitespace-nowrap">

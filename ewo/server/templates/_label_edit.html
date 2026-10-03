@@ -3,6 +3,8 @@
     <form hx-post="/gui/labels/{{ tag.id }}" hx-target="#label-list" class="flex flex-wrap gap-2 items-center">
       <input class="input input-bordered input-sm" name="name" value="{{ tag.name }}" required>
       <input class="input input-bordered input-sm flex-1" name="description" placeholder="Description (optional)" value="{{ tag.description or '' }}">
+      {% set color_value = tag.color or '' %}
+      {% include "_color_picker.html" %}
       <button class="btn btn-primary btn-sm" type="submit">Save</button>
       <button class="btn btn-sm" type="button" hx-get="/gui/labels" hx-target="#label-list">Cancel</button>
     </form>

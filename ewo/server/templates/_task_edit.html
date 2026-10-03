@@ -1,5 +1,5 @@
 <tr id="task-{{ task.id }}" class="bg-base-200">
-  <td colspan="6">
+  <td colspan="7">
     <form hx-post="/gui/tasks/{{ task.id }}" hx-target="#task-{{ task.id }}" hx-swap="outerHTML" class="grid gap-2">
       <input class="input input-bordered input-sm" name="title" value="{{ task.title }}" required>
       <textarea class="textarea textarea-bordered textarea-sm" name="description" rows="2" placeholder="Description">{{ task.description or "" }}</textarea>

@@ -156,7 +156,14 @@ def test_task_hierarchy_display_and_edit(client: TestClient) -> None:
     client.post("/api/tasks", json={"title": "story", "parent_id": parent["id"]})
 
     page = client.get("/tasks")
-    assert "↳" in page.text  # child indented under its parent
+    assert "epic" in page.text and "story" in page.text  # flat list: no tree indentation
+
+    # the child's detail panel lists its parent (refocus link) and the parent's lists the child
+    [child] = [t for t in client.get("/api/tasks").json() if t["title"] == "story"]
+    child_detail = client.get(f"/gui/tasks/{child['id']}/detail")
+    assert "Parent" in child_detail.text and "epic" in child_detail.text
+    parent_detail = client.get(f"/gui/tasks/{parent['id']}/detail")
+    assert "Sub-tasks" in parent_detail.text and "story" in parent_detail.text
 
     edit_form = client.get(f"/gui/tasks/{parent['id']}/edit")
     assert 'name="parent_id"' in edit_form.text
@@ -201,6 +208,42 @@ def test_task_detail_children_and_links(client: TestClient) -> None:
         x["external_key"] for x in client.get(f"/api/tasks/{task['id']}").json()["external_links"]
     }
     assert remaining == {"PROJ-2"}
+
+
+def test_task_sort(client: TestClient) -> None:
+    client.post("/api/tasks", json={"title": "high task", "priority": "high"})
+    client.post("/api/tasks", json={"title": "critical task", "priority": "critical"})
+    client.post("/api/tasks", json={"title": "another high", "priority": "high"})
+
+    listing = client.get("/gui/tasks").text
+    assert listing.index("critical task") < listing.index("high task")
+    assert listing.index("another high") < listing.index("high task")
+
+    by_title = client.get("/gui/tasks", params={"sort": "title"}).text
+    assert (
+        by_title.index("another high")
+        < by_title.index("critical task")
+        < by_title.index("high task")
+    )
+
+    reversed_ = client.get("/gui/tasks", params={"sort": "title", "reverse": "true"}).text
+    assert reversed_.index("high task") < reversed_.index("critical task")
+
+
+def test_task_detach_from_parent(client: TestClient) -> None:
+    parent = client.post("/api/tasks", json={"title": "epic"}).json()
+    child = client.post("/api/tasks", json={"title": "story", "parent_id": parent["id"]}).json()
+
+    panel = client.get(f"/gui/tasks/{parent['id']}/detail")
+    assert "Detach" in panel.text
+
+    detached = client.post(f"/gui/tasks/{child['id']}/detach")
+    assert "story" not in detached.text  # no longer listed as a sub-task
+    assert client.get(f"/api/tasks/{child['id']}").json()["parent_id"] is None
+
+    # detaching an already-root task re-renders its own (unchanged) detail
+    again = client.post(f"/gui/tasks/{child['id']}/detach")
+    assert again.status_code == 200 and "No parent task" in again.text
 
 
 def test_task_detail_nugget_management(client: TestClient, session: Session) -> None:
@@ -729,6 +772,23 @@ def test_labels_page_crud(client: TestClient) -> None:
 
     deleted = client.post(f"/gui/labels/{tag['id']}/delete")
     assert "No labels yet" in deleted.text
+
+
+def test_label_color_picker_and_pillbox(client: TestClient) -> None:
+    created = client.post("/gui/labels", data={"name": "urgent", "color": "#ee7733"})
+    assert "background-color: #EE7733" in created.text
+    assert "#EE7733  #EE7733" not in created.text
+
+    [tag] = client.get("/api/tags").json()
+    assert tag["color"] == "#EE7733"
+
+    edit_form = client.get(f"/gui/labels/{tag['id']}/edit")
+    assert "#EE7733" in edit_form.text  # swatch selected
+
+    # the task list renders the label as a colored pillbox
+    client.post("/api/tasks", json={"title": "labeled", "tags": ["urgent"]})
+    listing = client.get("/gui/tasks")
+    assert "background-color: #EE7733" in listing.text
 
 
 def test_tasks_multi_label_filter(client: TestClient) -> None:

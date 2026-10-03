@@ -150,7 +150,15 @@ def test_tag_endpoints(client: TestClient) -> None:
 
     tag_id = next(t["id"] for t in listed if t["name"] == "one")
     patched = client.patch(f"/api/tags/{tag_id}", json={"description": "the first"})
-    assert patched.json() == {"id": tag_id, "name": "one", "description": "the first"}
+    assert patched.json() == {
+        "id": tag_id,
+        "name": "one",
+        "description": "the first",
+        "color": None,
+    }
+
+    recolored = client.patch(f"/api/tags/{tag_id}", json={"color": "#ee7733"})
+    assert recolored.json()["color"] == "#EE7733"
 
     renamed = client.patch(f"/api/tags/{tag_id}", json={"name": " Uno "})
     assert renamed.json()["name"] == "uno"
