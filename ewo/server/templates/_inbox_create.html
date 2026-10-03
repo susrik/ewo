@@ -15,9 +15,9 @@
     <div class="grid gap-1">
       {% for nugget_id in p.nugget_ids %}
       {% set nugget = nuggets_by_id[nugget_id] %}
-      <label class="flex items-start gap-2 cursor-pointer">
+      <label class="flex items-start gap-2 cursor-pointer min-w-0">
         <input type="checkbox" class="checkbox checkbox-xs mt-0.5" name="nugget_ids" value="{{ nugget.id }}" checked>
-        <span class="text-sm"><span class="badge badge-xs {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span> {{ nugget.summary }}</span>
+        <span class="text-sm min-w-0 break-words"><span class="badge badge-xs {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span> {{ nugget.summary }}</span>
       </label>
       {% endfor %}
     </div>

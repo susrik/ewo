@@ -44,7 +44,6 @@
         <div class="font-semibold text-xs mb-1">Split (AI)</div>
         <form hx-post="/gui/tasks/organize/split/propose" hx-target="#task-{{ task.id }}-split" class="grid gap-1">
           <input type="hidden" name="task_id" value="{{ task.id }}">
-          <input type="hidden" name="panel" value="edit">
           <textarea class="textarea textarea-bordered textarea-sm w-full" name="instructions"
                     placeholder="Describe how to split this task into parts…"></textarea>
           <div>

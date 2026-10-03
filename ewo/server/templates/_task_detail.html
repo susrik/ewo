@@ -89,18 +89,6 @@
     </form>
   </div>
 
-  {% if llm_enabled %}
-  <div>
-    <h3 class="font-semibold">Split (AI)</h3>
-    <form hx-post="/gui/tasks/organize/split/propose" hx-target="#task-{{ task.id }}-detail" class="grid gap-1 mt-1">
-      <input type="hidden" name="task_id" value="{{ task.id }}">
-      <textarea class="textarea textarea-bordered textarea-sm w-full" name="instructions"
-                placeholder="Describe how to split this task into parts…" required></textarea>
-      <div><button class="btn btn-sm" type="submit" title="AI proposes sub-tasks or sibling tasks from your instructions">Propose split</button></div>
-    </form>
-  </div>
-  {% endif %}
-
   <div>
     <h3 class="font-semibold">Notes</h3>
     <ul class="grid gap-1 mt-1">

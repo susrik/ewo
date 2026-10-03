@@ -1,7 +1,3 @@
 {% include "_tasks.html" %}
-<div id="organize-result" hx-swap-oob="innerHTML"></div>
+<div id="organize-result" hx-swap-oob="innerHTML">{% if split_error %}<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ split_error }}</span></div>{% endif %}</div>
 <div id="tag-sync-banner" hx-swap-oob="innerHTML"></div>
-<div id="task-{{ task.id }}-detail" hx-swap-oob="innerHTML">
-  {% if split_error %}<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ split_error }}</span></div>{% endif %}
-  {% include "_task_detail.html" %}
-</div>

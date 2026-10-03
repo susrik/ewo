@@ -1,4 +1,4 @@
-<div id="nugget-{{ nugget.id }}" class="border rounded p-3 {% if nugget.status.value != 'new' %}opacity-60{% endif %}">
+<div id="nugget-{{ nugget.id }}" class="border rounded p-3 min-w-0 {% if nugget.status.value != 'new' %}opacity-60{% endif %}">
   <div class="flex flex-wrap items-baseline gap-2">
     {% if group_form_id %}<input type="checkbox" class="checkbox checkbox-xs" name="nugget_ids" value="{{ nugget.id }}" form="{{ group_form_id }}" checked title="Include in the group attach">{% endif %}
     <span class="badge badge-sm {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span>
@@ -9,7 +9,7 @@
     {% if nugget.due_date %}<span class="badge badge-sm badge-error badge-outline">due {{ nugget.due_date.isoformat() }}</span>{% endif %}
     {% for key in nugget.jira_keys %}<span class="badge badge-sm badge-primary badge-outline">{{ key }}</span>{% endfor %}
   </div>
-  {% if nugget.excerpt %}<blockquote class="text-sm opacity-70 mt-1 border-l-2 pl-2 break-words">{{ nugget.excerpt }}</blockquote>{% endif %}
+  {% if nugget.excerpt %}<blockquote class="text-sm opacity-70 mt-1 border-l-2 pl-2 break-all">{{ nugget.excerpt }}</blockquote>{% endif %}
 
   {% if nugget.status.value == 'new' %}
   {% set suggested = open_tasks | selectattr('id', 'equalto', nugget.suggested_task_id) | list | first %}

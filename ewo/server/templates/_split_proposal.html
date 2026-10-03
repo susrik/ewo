@@ -1,6 +1,5 @@
 {% if error %}
 <div class="alert alert-warning py-2 text-sm mt-2"><span>{{ error }}</span></div>
-{% if panel != 'edit' %}{% include "_task_detail.html" %}{% endif %}
 {% elif proposal and proposal.parts %}
 <div class="border rounded p-3 mt-2 proposal">
   <p class="text-sm mb-2">
@@ -21,17 +20,11 @@
     </div>
     <div class="flex gap-2">
       <button class="btn btn-xs btn-primary" type="submit">Apply selected</button>
-      {% if panel == 'edit' %}
       <button class="btn btn-xs btn-ghost" type="button"
               onclick="document.getElementById('task-{{ task.id }}-split').innerHTML=''">Dismiss</button>
-      {% else %}
-      <button class="btn btn-xs btn-ghost" type="button"
-              hx-get="/gui/tasks/{{ task.id }}/detail" hx-target="#task-{{ task.id }}-detail">Dismiss</button>
-      {% endif %}
     </div>
   </form>
 </div>
 {% else %}
 <p class="opacity-60 text-sm mt-2">No valid split parts proposed.</p>
-{% if panel != 'edit' %}{% include "_task_detail.html" %}{% endif %}
 {% endif %}

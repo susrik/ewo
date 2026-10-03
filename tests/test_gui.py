@@ -473,15 +473,17 @@ def test_task_split_parts_flow(client: TestClient, session: Session) -> None:
     propose_url = "/gui/tasks/organize/split/propose"
     apply_url = "/gui/tasks/organize/split/apply"
 
-    # no llm key configured: the detail form is hidden, and the endpoint explains
+    # no llm key configured: the split form is only ever in the edit panel
     assert "Split (AI)" not in client.get(f"/gui/tasks/{task['id']}/detail").text
+    assert "Split (AI)" not in client.get(f"/gui/tasks/{task['id']}/edit").text
     no_key = client.post(
         propose_url, data={"task_id": str(task["id"]), "instructions": "break it up"}
     )
     assert "No LLM API key" in no_key.text
 
     client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
-    assert "Split (AI)" in client.get(f"/gui/tasks/{task['id']}/detail").text
+    assert "Split (AI)" not in client.get(f"/gui/tasks/{task['id']}/detail").text
+    assert "Split (AI)" in client.get(f"/gui/tasks/{task['id']}/edit").text
     blank = client.post(propose_url, data={"task_id": str(task["id"]), "instructions": "  "})
     assert "Enter split instructions" in blank.text
 
@@ -515,7 +517,7 @@ def test_task_split_parts_flow(client: TestClient, session: Session) -> None:
     errored = client.post(propose_url, data={"task_id": str(task["id"]), "instructions": "again"})
     assert "did not return valid split parts" in errored.text
 
-    # applying with only the first part checked refreshes list + detail (OOB)
+    # applying with only the first part checked refreshes the list only
     form = (
         f"task_id={task['id']}&mode=children"
         f"&proposal={urllib.parse.quote(proposal_json)}&selected=0"
@@ -525,7 +527,7 @@ def test_task_split_parts_flow(client: TestClient, session: Session) -> None:
     )
     assert applied.status_code == 200
     assert "half a" in applied.text and "half b" not in applied.text
-    assert f'id="task-{task["id"]}-detail" hx-swap-oob' in applied.text
+    assert f'id="task-{task["id"]}-detail" hx-swap-oob' not in applied.text
     all_tasks = client.get("/api/tasks").json()
     [child] = [t for t in all_tasks if t["title"] == "half a"]
     assert child["parent_id"] == task["id"]
@@ -566,12 +568,11 @@ def test_task_split_from_edit_panel(client: TestClient, session: Session) -> Non
     client.app.state.config.llm.api_key = "sk"  # type: ignore[attr-defined]
     edit_form = client.get(f"/gui/tasks/{task['id']}/edit")
     assert "Split (AI)" in edit_form.text
-    assert 'name="panel" value="edit"' in edit_form.text
 
     # an edit-panel error renders inline without re-including the detail panel
     blank = client.post(
         "/gui/tasks/organize/split/propose",
-        data={"task_id": str(task["id"]), "instructions": "  ", "panel": "edit"},
+        data={"task_id": str(task["id"]), "instructions": "  "},
     )
     assert "Enter split instructions" in blank.text
     assert "Split #" not in blank.text
@@ -585,7 +586,7 @@ def test_task_split_from_edit_panel(client: TestClient, session: Session) -> Non
     client.app.state.llm = FakeLLM(responses=[proposal_json])  # type: ignore[attr-defined]
     proposed = client.post(
         "/gui/tasks/organize/split/propose",
-        data={"task_id": str(task["id"]), "instructions": "break it up", "panel": "edit"},
+        data={"task_id": str(task["id"]), "instructions": "break it up"},
     )
     assert "half a" in proposed.text
     assert 'name="proposal"' in proposed.text
@@ -814,6 +815,8 @@ def test_inbox_page_and_actions(client: TestClient, session: Session) -> None:
     assert "Never scanned" in page.text
     assert "No suggested task" in page.text  # nothing matched yet
     assert "break-words" in page.text  # unbroken text can't blow out the width
+    assert "break-all" in page.text  # excerpts/tokens force-break even without whitespace
+    assert "min-w-0" in page.text  # grid/flex items can shrink below content width
 
     # choosing "new task" opens a pre-filled create dialog instead of attaching
     dialog = client.post(

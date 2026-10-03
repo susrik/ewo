@@ -509,18 +509,13 @@ def organize_split_propose(
     llm: Annotated[LLMClient, Depends(get_llm)],
     task_id: Annotated[int, Form()],
     instructions: Annotated[str, Form()] = "",
-    panel: Annotated[str, Form()] = "detail",
 ) -> HTMLResponse:
     """Propose an AI split of one task into parts; render the review form in the
-    task's detail or edit panel. Stateless: the validated proposal round-trips
-    through hidden form fields and is re-validated at apply time."""
+    task's edit panel. Stateless: the validated proposal round-trips through
+    hidden form fields and is re-validated at apply time."""
     instructions = instructions.strip()
     llm_enabled = bool(config.llm.api_key)
-    if panel == "edit":
-        context = _edit_context(session, task_id, llm_enabled=llm_enabled)
-    else:
-        context = _detail_context(session, task_id, llm_enabled=llm_enabled)
-    context["panel"] = panel
+    context = _edit_context(session, task_id, llm_enabled=llm_enabled)
     context["error"] = None
     context["proposal"] = None
     context["proposal_json"] = ""
@@ -552,8 +547,7 @@ def organize_split_apply(
     selected: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
     """Re-validate the hidden proposal against the task's current nuggets and
-    apply only the checked parts, then refresh the task list plus the source
-    task's detail panel (out-of-band)."""
+    apply only the checked parts, then refresh the task list."""
     error: str | None = None
     try:
         parsed = task_organize.SplitPartsProposal.model_validate_json(proposal)
@@ -570,7 +564,6 @@ def organize_split_apply(
         error = str(exc)
     context = _task_context(session)
     context["split_error"] = error
-    context.update(_detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)))
     return _render(request, "_split_applied.html", context)
 
 
