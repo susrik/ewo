@@ -100,13 +100,10 @@ def _descendant_ids(task: Task) -> set[int]:
     return ids
 
 
-def _parent_candidates(session: Session, task: Task) -> list[Task]:
-    """Open tasks that may be *task*'s parent (not itself, not its descendants)."""
-    excluded = _descendant_ids(task) | {task.id}
-    candidates = [t for t in tasks.list_tasks(session) if t.id not in excluded]
-    if task.parent is not None and task.parent.id not in {t.id for t in candidates}:
-        candidates.insert(0, task.parent)
-    return candidates
+def _search_exclusions(session: Session, task_id: int) -> set[int]:
+    """A task and its descendants — never offer these as a parent or child."""
+    task = tasks.get_task(session, task_id)
+    return _descendant_ids(task) | {task.id}
 
 
 def _merge_candidates(session: Session, task: Task) -> list[Task]:
@@ -587,6 +584,33 @@ def organize_split_apply(
     return _render(request, "_split_applied.html", context)
 
 
+@router.get("/gui/tasks/search", response_class=HTMLResponse)
+def task_search(
+    request: Request,
+    session: SessionDep,
+    q: str = "",
+    mode: Literal["parent", "child"] = "parent",
+    task_id: str = "",
+) -> HTMLResponse:
+    """Substring search over open task titles, rendered as selectable rows.
+
+    ``mode`` picks the select action: ``parent`` fills the edit form's parent
+    slot via JS, ``child`` posts a re-parent request to ``task_id``."""
+    tid: int | None = None
+    if task_id.strip():
+        try:
+            tid = int(task_id)
+        except ValueError:
+            tid = None
+    exclude_ids = _search_exclusions(session, tid) if tid is not None else set()
+    results = tasks.search_tasks(session, q, exclude_ids=exclude_ids)
+    return _render(
+        request,
+        "_task_search_results.html",
+        {"results": results, "mode": mode, "task_id": tid or ""},
+    )
+
+
 @router.get("/gui/tasks/{task_id}", response_class=HTMLResponse)
 def task_row(request: Request, task_id: int, session: SessionDep) -> HTMLResponse:
     return _render(request, "_task_row.html", {"task": tasks.get_task(session, task_id)})
@@ -754,7 +778,6 @@ def _edit_context(session: Session, task_id: int, llm_enabled: bool = False) -> 
     return {
         "task": task,
         "people": people.list_people(session),
-        "parent_candidates": _parent_candidates(session, task),
         "merge_candidates": _merge_candidates(session, task),
         "llm_enabled": llm_enabled,
     }
@@ -794,6 +817,34 @@ def task_add_child(
 ) -> HTMLResponse:
     if title.strip():
         tasks.create_task(session, title=title.strip(), parent_id=task_id)
+    return task_detail(request, task_id, session, config)
+
+
+@router.post("/gui/tasks/{task_id}/children/existing", response_class=HTMLResponse)
+def task_add_existing_child(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    child_id: Annotated[int, Form()],
+    confirmed: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Re-parent an existing task under ``task_id`` as a sub-task.
+
+    A child that already has a different parent first renders a confirmation
+    (naming that parent); confirming re-assigns it."""
+    container = tasks.get_task(session, task_id)
+    child = tasks.get_task(session, child_id)
+    if child.parent_id is not None and child.parent_id != task_id and not confirmed:
+        return _render(request, "_reparent_confirm.html", {"task": container, "child": child})
+    try:
+        tasks.update_task(session, child_id, parent_id=task_id)
+    except ValueError as exc:
+        return _render(
+            request,
+            "_reparent_confirm.html",
+            {"task": container, "child": child, "error": str(exc)},
+        )
     return task_detail(request, task_id, session, config)
 
 

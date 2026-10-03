@@ -252,6 +252,69 @@ def test_tasks_page_focus_include_closed(client: TestClient) -> None:
     assert "closed focus" in client.get("/tasks", params={"focus": str(closed["id"])}).text
 
 
+def test_task_search_substring_and_exclusions(client: TestClient) -> None:
+    client.post("/api/tasks", json={"title": "alpha"})
+    client.post("/api/tasks", json={"title": "alpha beta"})
+    client.post("/api/tasks", json={"title": "gamma"})
+
+    results = client.get("/gui/tasks/search", params={"q": "alp"}).text
+    assert "alpha beta" in results and "alpha" in results and "gamma" not in results
+
+    parent = client.post("/api/tasks", json={"title": "parent one"}).json()
+    sibling = client.post("/api/tasks", json={"title": "sibling one"}).json()
+    client.post("/api/tasks", json={"title": "child one", "parent_id": parent["id"]})
+
+    # parent mode excludes the task itself and its descendants
+    parent_only = client.get(
+        "/gui/tasks/search",
+        params={"q": "one", "mode": "parent", "task_id": str(parent["id"])},
+    ).text
+    assert "parent one" not in parent_only
+    assert "child one" not in parent_only
+    assert f'data-id="{sibling["id"]}"' in parent_only
+
+
+def test_add_existing_child_reparent_with_confirmation(client: TestClient) -> None:
+    other = client.post("/api/tasks", json={"title": "other parent"}).json()
+    target = client.post("/api/tasks", json={"title": "target"}).json()
+    child = client.post("/api/tasks", json={"title": "movable", "parent_id": other["id"]}).json()
+
+    # first request prompts (child already under "other parent") without reassigning
+    prompt = client.post(
+        f"/gui/tasks/{target['id']}/children/existing", data={"child_id": child["id"]}
+    )
+    assert "other parent" in prompt.text and "Reassign" in prompt.text
+    assert client.get(f"/api/tasks/{child['id']}").json()["parent_id"] == other["id"]
+
+    # confirming reassigns; the detail panel now lists it as a sub-task
+    done = client.post(
+        f"/gui/tasks/{target['id']}/children/existing",
+        data={"child_id": child["id"], "confirmed": "1"},
+    )
+    assert "movable" in done.text
+    assert client.get(f"/api/tasks/{child['id']}").json()["parent_id"] == target["id"]
+
+    # an unparented child is reassigned without a prompt
+    orphan = client.post("/api/tasks", json={"title": "orphan"}).json()
+    client.post(f"/gui/tasks/{target['id']}/children/existing", data={"child_id": orphan["id"]})
+    assert client.get(f"/api/tasks/{orphan['id']}").json()["parent_id"] == target["id"]
+
+    # a non-numeric task_id on the search endpoint resolves with no exclusions
+    assert client.get("/gui/tasks/search", params={"q": "a", "task_id": "abc"}).status_code == 200
+
+
+def test_reparent_cycle_is_rejected(client: TestClient) -> None:
+    parent = client.post("/api/tasks", json={"title": "p"}).json()
+    child = client.post("/api/tasks", json={"title": "c", "parent_id": parent["id"]}).json()
+
+    # making the parent a child of its own descendant is refused inline
+    response = client.post(
+        f"/gui/tasks/{child['id']}/children/existing", data={"child_id": parent["id"]}
+    )
+    assert "Cannot do that" in response.text
+    assert client.get(f"/api/tasks/{parent['id']}").json()["parent_id"] is None
+
+
 def test_task_detach_from_parent(client: TestClient) -> None:
     parent = client.post("/api/tasks", json={"title": "epic"}).json()
     child = client.post("/api/tasks", json={"title": "story", "parent_id": parent["id"]}).json()

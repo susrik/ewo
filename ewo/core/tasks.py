@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
 from typing import Literal
 
@@ -96,6 +97,33 @@ def get_task(session: Session, task_id: int) -> Task:
     if task is None:
         raise NotFoundError(f"task {task_id} not found")
     return task
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so user search text is matched literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def search_tasks(
+    session: Session, query: str, exclude_ids: Iterable[int] = (), limit: int = 20
+) -> list[Task]:
+    """Open tasks whose title contains ``query`` (case-insensitive substring).
+
+    ``exclude_ids`` drops tasks that must not be offered (e.g. a task itself
+    and its descendants when choosing a parent/child)."""
+    q = query.strip()
+    if not q:
+        return []
+    pattern = f"%{_escape_like(q)}%"
+    stmt = (
+        select(Task)
+        .options(selectinload(Task.tags), selectinload(Task.assignee))
+        .where(Task.title.ilike(pattern, escape="\\"))
+        .where(Task.status.not_in([TaskStatus.DONE, TaskStatus.DROPPED]))
+    )
+    if exclude_ids:
+        stmt = stmt.where(Task.id.not_in(exclude_ids))
+    return list(session.scalars(stmt.order_by(Task.title).limit(limit)))
 
 
 _PRIORITY_RANK = {

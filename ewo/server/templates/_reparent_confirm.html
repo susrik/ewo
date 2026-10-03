@@ -1,0 +1,16 @@
+<div class="alert alert-warning p-2 text-sm">
+  {% if error %}
+  <span>Cannot do that: {{ error }}</span>
+  {% else %}
+  <span>Reassign <b>{{ child.title }}</b> from parent <b>{{ child.parent.title }}</b> to <b>{{ task.title }}</b>?</span>
+  {% endif %}
+  <div class="flex gap-1 mt-1">
+    {% if not error %}
+    <button class="btn btn-xs btn-warning" hx-post="/gui/tasks/{{ task.id }}/children/existing"
+            hx-vals='{"child_id": "{{ child.id }}", "confirmed": "1"}'
+            hx-target="#task-{{ task.id }}-detail">Reassign</button>
+    {% endif %}
+    <button class="btn btn-xs" hx-get="/gui/tasks/{{ task.id }}/detail"
+            hx-target="#task-{{ task.id }}-detail">Cancel</button>
+  </div>
+</div>

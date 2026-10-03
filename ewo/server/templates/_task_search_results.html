@@ -1,0 +1,23 @@
+{% if results %}
+<div class="grid gap-1">
+  {% for t in results %}
+  {% if mode == 'parent' %}
+  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2"
+          data-id="{{ t.id }}" data-title="{{ t.title }}" onclick="pickParentTask(this)">
+    <span class="priority-pill priority-{{ t.priority.value }}">{{ t.priority.value }}</span>
+    <span class="text-left min-w-0 break-words">{{ t.title }}</span>
+  </button>
+  {% else %}
+  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2"
+          hx-post="/gui/tasks/{{ task_id }}/children/existing"
+          hx-vals='{"child_id": "{{ t.id }}"}'
+          hx-target="#task-{{ task_id }}-detail">
+    <span class="priority-pill priority-{{ t.priority.value }}">{{ t.priority.value }}</span>
+    <span class="text-left min-w-0 break-words">{{ t.title }}</span>
+  </button>
+  {% endif %}
+  {% endfor %}
+</div>
+{% else %}
+<span class="text-sm opacity-60 px-2">No matching tasks.</span>
+{% endif %}

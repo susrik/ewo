@@ -113,6 +113,16 @@
       <input class="input input-bordered input-sm flex-1" name="title" placeholder="Add a sub-task" required>
       <button class="btn btn-sm" type="submit">Add</button>
     </form>
+    <div class="dropdown mt-1">
+      <div tabindex="0" role="button" class="btn btn-sm btn-ghost">Add existing task…</div>
+      <div tabindex="0" class="dropdown-content z-20 w-64 p-2 shadow bg-base-100 rounded-box">
+        <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
+               hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
+               hx-target="#task-{{ task.id }}-child-results"
+               hx-vals='{"mode": "child", "task_id": "{{ task.id }}"}' autocomplete="off">
+        <div id="task-{{ task.id }}-child-results" class="mt-1"></div>
+      </div>
+    </div>
   </div>
 
   <div>

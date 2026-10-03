@@ -242,6 +242,29 @@ def test_sort_tasks_missing_due_dates_last(session: Session) -> None:
     assert [t.title for t in ordered] == ["dated", "undated"]
 
 
+def test_search_tasks(session: Session) -> None:
+    tasks.create_task(session, "fix exporter bug")
+    tasks.create_task(session, "export metrics")
+    closed = tasks.create_task(session, "export the old stuff")
+    tasks.update_task(session, closed.id, status=TaskStatus.DONE)
+
+    hit = tasks.search_tasks(session, "export")
+    assert {t.title for t in hit} == {"fix exporter bug", "export metrics"}  # closed excluded
+
+    assert tasks.search_tasks(session, "zzz") == []
+    assert tasks.search_tasks(session, "") == []
+
+    # % and _ are treated literally, not as LIKE wildcards
+    tasks.create_task(session, "100% done?")
+    assert [t.title for t in tasks.search_tasks(session, "100%")] == ["100% done?"]
+
+    # exclude_ids drops specific tasks
+    excluded = {t.id for t in hit}
+    assert all(
+        t.id not in excluded for t in tasks.search_tasks(session, "export", exclude_ids=excluded)
+    )
+
+
 def test_notes_and_links(session: Session) -> None:
     task = tasks.create_task(session, "with note")
     note = tasks.add_note(session, "a note", task_id=task.id)
