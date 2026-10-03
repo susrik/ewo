@@ -83,15 +83,17 @@ rationale.
   `#organize-result` (checkbox list + new/existing parent radio), apply via
   `POST /gui/tasks/organize/group` → `_tasks_oob.html` (validation errors
   render inline in the OOB `#organize-result` slot). Splitting one task from
-  free-form instructions is the same stateless pattern on the detail panel:
-  "Split (AI)" form (only when `llm_enabled`, passed via `_detail_context`) →
+  free-form instructions is the same stateless pattern, but only in the edit
+  panel (never in the expanded task detail): the "Split (AI)" form lives in
+  `_task_edit.html` (only when `llm_enabled`, passed via `_edit_context`) →
   `POST /gui/tasks/organize/split/propose` → `propose_split_parts` →
-  `_split_proposal.html` in `#task-{id}-detail` (checkbox per part + hidden
+  `_split_proposal.html` in `#task-{id}-split` (checkbox per part + hidden
   `proposal` JSON/`task_id`/`mode`); `POST /gui/tasks/organize/split/apply`
   re-validates the hidden proposal against the currently attached nuggets,
   applies only the checked parts via `apply_split_parts`, and returns
-  `_split_applied.html` (fresh `#task-list` + OOB `#task-{id}-detail`, errors
-  inline). These split routes are declared before `/gui/tasks/{task_id}`.
+  `_split_applied.html` (fresh `#task-list`, errors inline in the OOB
+  `#organize-result` slot). These split routes are declared before
+  `/gui/tasks/{task_id}`.
   Related grouping for a just-created task follows the same stateless pattern:
   `create_task` (non-compact, llm_enabled) returns `_tasks_oob.html` with
   `_related_banner.html` in the OOB `#related-banner` slot; "Find related"
@@ -131,6 +133,12 @@ rationale.
 - GUI: pages `/`, `/tasks`, `/inbox`, `/people`, `/jobs`, `/labels` extend
   `_layout.html`; fragments are `_*.html` and are what htmx swaps in. A
   mutation returns the fragment it belongs to (row, item, list).
+- Any element rendering free-form user text inside a flex/grid layout must
+  carry `min-w-0` on itself and its flex/grid-item ancestors (flex/grid items
+  default to `min-width: auto` and inflate to their content's min-content);
+  use `break-words` for prose and `break-all` for excerpts/tokens/URLs (note
+  `break-words` = `overflow-wrap: break-word` does NOT reduce min-content, so
+  it alone cannot stop a long unbroken string from widening the page).
 - Reports are generated as markdown and published to the dedicated GitHub
   repo configured in `reports_repo`; path format
   `<folder>/YYYY-MM/YYYY-MM-DD-HHMM-<type>.md` (HHMM — no colon, Windows-safe).

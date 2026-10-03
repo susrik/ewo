@@ -1,0 +1,11 @@
+{% if error %}
+<div class="alert alert-warning py-2 text-sm mt-1"><span>{{ error }}</span></div>
+{% else %}
+<form hx-post="/gui/tasks/{{ task.id }}/description/apply" hx-target="#task-{{ task.id }}-detail" class="grid gap-1 border rounded p-2 mt-1">
+  <textarea class="textarea textarea-bordered textarea-sm w-full" name="description" rows="4">{{ suggested_description }}</textarea>
+  <div class="flex gap-2">
+    <button class="btn btn-xs btn-primary" type="submit">Apply description</button>
+    <button class="btn btn-xs btn-ghost" type="button" onclick="this.closest('form').remove()">Cancel</button>
+  </div>
+</form>
+{% endif %}

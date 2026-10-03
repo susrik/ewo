@@ -228,7 +228,13 @@ def attach_nugget(
     """Attach to an existing task (``task_id``) or create a new one from the nugget."""
     try:
         return nuggets.attach_nugget(
-            session, nugget_id, jira_base_url=config.jira.base_url or None, **body.model_dump()
+            session,
+            nugget_id,
+            jira_base_url=config.jira.base_url or None,
+            default_assignee_id=nuggets.default_assignee(
+                session, config.nugget.default_assignee_self
+            ),
+            **body.model_dump(),
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

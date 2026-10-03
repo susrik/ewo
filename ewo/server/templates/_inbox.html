@@ -2,13 +2,14 @@
 <div class="mt-4">
   {% if group.kind == 'task' %}
   <div class="flex flex-wrap items-center gap-2">
-    <h3 class="font-semibold text-sm">→ #{{ group.task.id }} {{ group.task.title }}</h3>
-    <form hx-post="/gui/inbox/attach-group" hx-target="#inbox-list" class="inline">
+    <h3 class="font-semibold text-sm min-w-0 break-words">→ #{{ group.task.id }} {{ group.task.title }}</h3>
+    <form id="attach-group-{{ group.task.id }}" hx-post="/gui/inbox/attach-group" hx-target="#inbox-list" class="inline">
       <input type="hidden" name="task_id" value="{{ group.task.id }}">
       <input type="hidden" name="status" value="{{ filters.status }}">
       <input type="hidden" name="owner" value="{{ filters.owner }}">
+      <input type="hidden" name="selected" value="1">
       <button class="btn btn-xs btn-primary btn-outline" type="submit">
-        Attach all {{ group.nuggets | length }} to #{{ group.task.id }}
+        Attach selected to #{{ group.task.id }}
       </button>
     </form>
   </div>
@@ -19,7 +20,11 @@
   {% endif %}
   <div class="grid gap-2 mt-1">
     {% for nugget in group.nuggets %}
+    {% if group.kind == 'task' %}
+    {% with group_form_id = "attach-group-" ~ group.task.id %}{% include "_nugget.html" %}{% endwith %}
+    {% else %}
     {% include "_nugget.html" %}
+    {% endif %}
     {% endfor %}
   </div>
 </div>

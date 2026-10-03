@@ -309,3 +309,13 @@ class OAuthToken(Base):
     provider: Mapped[str] = mapped_column(String(50), unique=True)  # e.g. "google"
     token_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class UIPreference(Base):
+    """A single UI preference, e.g. the saved tasks-page filter state."""
+
+    __tablename__ = "ui_preferences"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

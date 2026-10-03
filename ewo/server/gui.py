@@ -6,9 +6,10 @@ swapped in by htmx; every mutation re-renders the fragment it belongs to.
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
@@ -17,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
-from ewo.core import nuggets, one_on_ones, people, task_organize, tasks
+from ewo.core import nuggets, one_on_ones, people, preferences, task_organize, tasks
 from ewo.core import tags as tags_core
 from ewo.core.dashboard import build_dashboard
 from ewo.core.llm import LLMClient
@@ -129,6 +130,12 @@ def _parent_candidates(session: Session, task: Task) -> list[Task]:
     return candidates
 
 
+def _merge_candidates(session: Session, task: Task) -> list[Task]:
+    """Open tasks *task* may be merged into (not itself, not its descendants)."""
+    excluded = _descendant_ids(task) | {task.id}
+    return [t for t in tasks.list_tasks(session) if t.id not in excluded]
+
+
 def _task_context(
     session: Session,
     status: str = "",
@@ -169,6 +176,18 @@ def _task_context(
     }
 
 
+_FILTER_KEYS = ("status", "assignee", "tag", "tags", "tag_match", "source", "include_closed")
+_FILTER_PREF_KEY = "tasks_filter"
+
+
+def _saved_filter(request: Request, session: Session) -> dict[str, object] | None:
+    """The persisted task-list filter, applied only when none was passed."""
+    if any(key in request.query_params for key in _FILTER_KEYS):
+        return None
+    saved = preferences.get_pref(session, _FILTER_PREF_KEY)
+    return saved if isinstance(saved, dict) else None
+
+
 @router.get("/tasks", response_class=HTMLResponse)
 def tasks_page(
     request: Request,
@@ -182,6 +201,15 @@ def tasks_page(
     source: str = "",
     include_closed: bool = False,
 ) -> HTMLResponse:
+    saved = _saved_filter(request, session)
+    if saved is not None:
+        status = str(saved.get("status", status))
+        assignee = str(saved.get("assignee", assignee))
+        tag = str(saved.get("tag", tag))
+        tags = saved.get("tags") if isinstance(saved.get("tags"), list) else tags  # type: ignore[assignment]
+        tag_match = str(saved.get("tag_match", tag_match))  # type: ignore[assignment]
+        source = str(saved.get("source", source))
+        include_closed = bool(saved.get("include_closed", include_closed))
     context = _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed)
     context["page"] = "tasks"
     context["llm_enabled"] = bool(config.llm.api_key)
@@ -200,10 +228,22 @@ def task_list(
     source: str = "",
     include_closed: bool = False,
 ) -> HTMLResponse:
+    saved = _saved_filter(request, session)
+    if saved is not None:
+        status = str(saved.get("status", status))
+        assignee = str(saved.get("assignee", assignee))
+        tag = str(saved.get("tag", tag))
+        tags = saved.get("tags") if isinstance(saved.get("tags"), list) else tags  # type: ignore[assignment]
+        tag_match = str(saved.get("tag_match", tag_match))  # type: ignore[assignment]
+        source = str(saved.get("source", source))
+        include_closed = bool(saved.get("include_closed", include_closed))
+    context = _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed)
+    if any(key in request.query_params for key in _FILTER_KEYS):
+        preferences.set_pref(session, _FILTER_PREF_KEY, cast(dict[str, object], context["filters"]))
     return _render(
         request,
         "_tasks.html",
-        _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed),
+        context,
     )
 
 
@@ -252,13 +292,14 @@ def tasks_organize(
     config: ConfigDep,
     llm: Annotated[LLMClient, Depends(get_llm)],
 ) -> HTMLResponse:
-    context: dict[str, object] = {"proposals": [], "error": None}
+    context: dict[str, object] = {"proposals": [], "proposals_json": "[]", "error": None}
     if not config.llm.api_key:
         context["error"] = "No LLM API key configured."
     else:
         try:
             proposals, _tokens = task_organize.propose_organization(session, llm)
             context["proposals"] = proposals
+            context["proposals_json"] = json.dumps([p.model_dump() for p in proposals])
         except ValueError as exc:
             context["error"] = str(exc)
     return _render(request, "_organize.html", context)
@@ -316,6 +357,39 @@ def organize_retitle(
 ) -> HTMLResponse:
     tasks.update_task(session, task_id, title=title.strip())
     return _tasks_after_organize(request, session)
+
+
+@router.post("/gui/tasks/organize/apply", response_class=HTMLResponse)
+def organize_apply(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    proposals_json: Annotated[str, Form()],
+    selected: Annotated[list[int] | None, Form()] = None,
+) -> HTMLResponse:
+    """Apply the checked organization proposals in one submission.
+
+    The proposal JSON round-trips through a hidden form field and is
+    re-parsed; only the checked indexes are applied, each via its ``apply_*``
+    helper. Failures are reported inline (out-of-band) without aborting the
+    batch."""
+    error: str | None = None
+    try:
+        parsed = [task_organize.Proposal.model_validate(p) for p in json.loads(proposals_json)]
+        chosen = set(selected or [])
+        picked = [p for index, p in enumerate(parsed) if index in chosen]
+        if not picked:
+            raise ValueError("no proposals selected")
+        errors = task_organize.apply_proposals(
+            session, picked, jira_base_url=_jira_base_url(config)
+        )
+        if errors:
+            error = "; ".join(errors)
+    except (ValueError, json.JSONDecodeError) as exc:
+        error = str(exc)
+    context = _task_context(session)
+    context["organize_error"] = error
+    return _render(request, "_tasks_oob.html", context)
 
 
 @router.post("/gui/tasks/organize/topic", response_class=HTMLResponse)
@@ -437,10 +511,11 @@ def organize_split_propose(
     instructions: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     """Propose an AI split of one task into parts; render the review form in the
-    task's detail panel. Stateless: the validated proposal round-trips through
+    task's edit panel. Stateless: the validated proposal round-trips through
     hidden form fields and is re-validated at apply time."""
     instructions = instructions.strip()
-    context = _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key))
+    llm_enabled = bool(config.llm.api_key)
+    context = _edit_context(session, task_id, llm_enabled=llm_enabled)
     context["error"] = None
     context["proposal"] = None
     context["proposal_json"] = ""
@@ -472,8 +547,7 @@ def organize_split_apply(
     selected: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
     """Re-validate the hidden proposal against the task's current nuggets and
-    apply only the checked parts, then refresh the task list plus the source
-    task's detail panel (out-of-band)."""
+    apply only the checked parts, then refresh the task list."""
     error: str | None = None
     try:
         parsed = task_organize.SplitPartsProposal.model_validate_json(proposal)
@@ -490,7 +564,6 @@ def organize_split_apply(
         error = str(exc)
     context = _task_context(session)
     context["split_error"] = error
-    context.update(_detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)))
     return _render(request, "_split_applied.html", context)
 
 
@@ -500,16 +573,13 @@ def task_row(request: Request, task_id: int, session: SessionDep) -> HTMLRespons
 
 
 @router.get("/gui/tasks/{task_id}/edit", response_class=HTMLResponse)
-def task_edit(request: Request, task_id: int, session: SessionDep) -> HTMLResponse:
-    task = tasks.get_task(session, task_id)
+def task_edit(
+    request: Request, task_id: int, session: SessionDep, config: ConfigDep
+) -> HTMLResponse:
     return _render(
         request,
         "_task_edit.html",
-        {
-            "task": task,
-            "people": people.list_people(session),
-            "parent_candidates": _parent_candidates(session, task),
-        },
+        _edit_context(session, task_id, llm_enabled=bool(config.llm.api_key)),
     )
 
 
@@ -548,6 +618,59 @@ def task_update(
     return _render(request, "_task_row.html", {"task": task})
 
 
+@router.post("/gui/tasks/{task_id}/merge", response_class=HTMLResponse)
+def task_merge(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    into_id: Annotated[int, Form()],
+) -> HTMLResponse:
+    """Merge this task into *into_id* (this task is deleted); refresh the list."""
+    task_organize.apply_merge(session, into_id, task_id)
+    return _tasks_after_organize(request, session)
+
+
+@router.post("/gui/tasks/{task_id}/description/propose", response_class=HTMLResponse)
+def task_description_propose(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+) -> HTMLResponse:
+    """AI suggests an updated description from the task's attached nuggets."""
+    context: dict[str, object] = {
+        "task": tasks.get_task(session, task_id),
+        "suggested_description": None,
+        "error": None,
+    }
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    else:
+        try:
+            description, _tokens = task_organize.propose_description(session, llm, task_id)
+            context["suggested_description"] = description
+        except ValueError as exc:
+            context["error"] = str(exc)
+    return _render(request, "_description_preview.html", context)
+
+
+@router.post("/gui/tasks/{task_id}/description/apply", response_class=HTMLResponse)
+def task_description_apply(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    description: Annotated[str, Form()],
+) -> HTMLResponse:
+    tasks.update_task(session, task_id, description=description.strip() or None)
+    return _render(
+        request,
+        "_task_detail.html",
+        _detail_context(session, task_id, llm_enabled=bool(config.llm.api_key)),
+    )
+
+
 @router.post("/gui/tasks/{task_id}/propagate-tags", response_class=HTMLResponse)
 def task_propagate_tags(
     request: Request,
@@ -577,6 +700,17 @@ def _detail_context(session: Session, task_id: int, llm_enabled: bool = False) -
         "task": tasks.get_task(session, task_id),
         "open_tasks": tasks.list_tasks(session),
         "kinds": list(NuggetKind),
+        "llm_enabled": llm_enabled,
+    }
+
+
+def _edit_context(session: Session, task_id: int, llm_enabled: bool = False) -> dict[str, object]:
+    task = tasks.get_task(session, task_id)
+    return {
+        "task": task,
+        "people": people.list_people(session),
+        "parent_candidates": _parent_candidates(session, task),
+        "merge_candidates": _merge_candidates(session, task),
         "llm_enabled": llm_enabled,
     }
 
@@ -631,15 +765,15 @@ def task_add_links(
     if keys:
         nuggets.ensure_jira_links(session, task, keys, _jira_base_url(config))
         session.commit()
-    return task_detail(request, task_id, session, config)
+    return _render(request, "_task_jira.html", {"task": task})
 
 
 @router.post("/gui/tasks/{task_id}/links/{link_id}/delete", response_class=HTMLResponse)
 def task_delete_link(
-    request: Request, task_id: int, link_id: int, session: SessionDep, config: ConfigDep
+    request: Request, task_id: int, link_id: int, session: SessionDep
 ) -> HTMLResponse:
     tasks.unlink_external(session, task_id, link_id)
-    return task_detail(request, task_id, session, config)
+    return _render(request, "_task_jira.html", {"task": tasks.get_task(session, task_id)})
 
 
 # --- inbox (nuggets) ---
@@ -735,15 +869,67 @@ def inbox_attach_group(
     task_id: Annotated[int, Form()],
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
+    selected: Annotated[str, Form()] = "",
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
-    """Attach every listed nugget suggested for *task_id* in one click."""
+    """Attach the selected nuggets suggested for *task_id* (all when none chosen)."""
     items = nuggets.list_nuggets(session, status=NuggetStatus.NEW, owner_id=_opt_int(owner))
+    chosen = set(nugget_ids or []) if selected else None
     for item in items:
-        if item.suggested_task_id == task_id:
+        if item.suggested_task_id == task_id and (chosen is None or item.id in chosen):
             nuggets.attach_nugget(
                 session, item.id, task_id=task_id, jira_base_url=_jira_base_url(config)
             )
     return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+
+
+@router.post("/gui/inbox/suggest-creates", response_class=HTMLResponse)
+def inbox_suggest_creates(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    llm: Annotated[LLMClient, Depends(get_llm)],
+) -> HTMLResponse:
+    """AI proposes new tasks that group clusters of unmapped notes; nothing is
+    persisted until the user picks notes and confirms."""
+    context: dict[str, object] = {"proposals": [], "nuggets_by_id": {}, "error": None}
+    if not config.llm.api_key:
+        context["error"] = "No LLM API key configured."
+    else:
+        try:
+            proposals, _tokens = task_organize.propose_inbox_creates(session, llm)
+            new_nuggets = nuggets.list_nuggets(session, status=NuggetStatus.NEW)
+            context["proposals"] = proposals
+            context["nuggets_by_id"] = {n.id: n for n in new_nuggets}
+        except ValueError as exc:
+            context["error"] = str(exc)
+    return _render(request, "_inbox_create.html", context)
+
+
+@router.post("/gui/inbox/create-group", response_class=HTMLResponse)
+def inbox_create_group(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    title: Annotated[str, Form()],
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+) -> HTMLResponse:
+    """Create a task from the user-confirmed cluster of notes and refresh the inbox."""
+    ids = [n for n in (nugget_ids or [])]
+    error: str | None = None
+    if not title.strip():
+        error = "New task needs a title."
+    elif not ids:
+        error = "Select at least one note to create a task."
+    else:
+        task_organize.apply_create(
+            session, title.strip(), ids, jira_base_url=_jira_base_url(config)
+        )
+    context = _inbox_context(session, status, owner)
+    context["inbox_create_error"] = error
+    return _render(request, "_inbox_oob.html", context)
 
 
 @router.post("/gui/nuggets/{nugget_id}/attach", response_class=HTMLResponse)
@@ -757,6 +943,12 @@ def nugget_attach(
     assignee_id: Annotated[str, Form()] = "",
     due_date: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
+    if not task_id:
+        return _render(
+            request,
+            "_nugget_new_task.html",
+            _nugget_new_task_context(session, nugget_id, config),
+        )
     nuggets.attach_nugget(
         session,
         nugget_id,
@@ -767,6 +959,72 @@ def nugget_attach(
         jira_base_url=_jira_base_url(config),
     )
     return _render(request, "_nugget.html", {"nugget": nuggets.get_nugget(session, nugget_id)})
+
+
+def _nugget_new_task_context(session: Session, nugget_id: int, config: Config) -> dict[str, object]:
+    """Guesses for the pre-filled create dialog when attaching a nugget to a new task."""
+    nug = nuggets.get_nugget(session, nugget_id)
+    priority = (
+        TaskPriority.HIGH
+        if nug.kind == NuggetKind.DEADLINE
+        else TaskPriority(config.nugget.default_priority)
+    )
+    assignee_id = nug.owner_id
+    if assignee_id is None and config.nugget.default_assignee_self:
+        self_person = people.get_self(session)
+        assignee_id = self_person.id if self_person is not None else None
+    return {
+        "nugget": nug,
+        "people": people.list_people(session),
+        "prefill": {
+            "title": nug.summary,
+            "description": nug.excerpt,
+            "priority": priority,
+            "assignee_id": assignee_id,
+            "due_date": nug.due_date,
+        },
+    }
+
+
+@router.post("/gui/nuggets/{nugget_id}/create", response_class=HTMLResponse)
+def nugget_create_task(
+    request: Request,
+    nugget_id: int,
+    session: SessionDep,
+    config: ConfigDep,
+    title: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+    priority: Annotated[str, Form()] = "normal",
+    assignee_id: Annotated[str, Form()] = "",
+    due_date: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Create a task from the edited nugget guesses and attach the nugget."""
+    nuggets.attach_nugget(
+        session,
+        nugget_id,
+        title=title.strip(),
+        description=description.strip() or None,
+        priority=TaskPriority(priority),
+        assignee_id=_opt_int(assignee_id),
+        due_date=_opt_date(due_date),
+        default_assignee_id=nuggets.default_assignee(session, config.nugget.default_assignee_self),
+        jira_base_url=_jira_base_url(config),
+    )
+    return _render(request, "_nugget.html", {"nugget": nuggets.get_nugget(session, nugget_id)})
+
+
+@router.get("/gui/nuggets/{nugget_id}/attach-form", response_class=HTMLResponse)
+def nugget_attach_form(request: Request, nugget_id: int, session: SessionDep) -> HTMLResponse:
+    """Re-render a NEW nugget's attach form (the create-dialog cancel path)."""
+    return _render(
+        request,
+        "_nugget.html",
+        {
+            "nugget": nuggets.get_nugget(session, nugget_id),
+            "open_tasks": tasks.list_tasks(session),
+            "people": people.list_people(session),
+        },
+    )
 
 
 @router.post("/gui/nuggets/{nugget_id}/edit", response_class=HTMLResponse)

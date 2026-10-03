@@ -66,5 +66,9 @@
     ],
     "window_days": 60,
     "max_file_chars": 40000
+  },
+  "nugget": {
+    "default_priority": "normal",
+    "default_assignee_self": true
   }
 }

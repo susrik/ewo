@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ewo.core import nuggets, tasks
 from ewo.core.llm import LLMClient
+from ewo.core.people import NotFoundError
 from ewo.db.models import Nugget, NuggetStatus, Task, TaskSource, TaskStatus
 
 _MAX_PROPOSALS = 10
@@ -89,6 +90,26 @@ Respond with JSON only, matching:
 - If fewer than 2 tasks relate to the new task, return {"task_ids": [], ...}.
 """
 
+_DESCRIPTION_SYSTEM = """You write an updated task description for an engineering manager's task,
+based on the work items ("nuggets") now attached to it. Summarize what the task
+actually covers in one concise paragraph (2-4 sentences) written as a
+description of the work, not a to-do list of individual items.
+
+Respond with JSON only, matching: {"description": str}
+"""
+
+_INBOX_CREATE_SYSTEM = """You tidy an engineering manager's notes inbox. These items are work
+items found in notes with no existing task to attach to yet. Propose new
+tasks that group clearly-related unattached items together.
+
+Respond with JSON only, matching:
+{"proposals": [{"kind": "create", "nugget_ids": [int], "title": str, "reason": str}]}
+
+- Group at least 2 related items per proposal; never invent items; use only the
+  listed item ids, and put each item in at most one proposal.
+- Give each proposal a concise title. If nothing should be grouped, return an empty list.
+"""
+
 
 class Proposal(BaseModel):
     """One organization suggestion; the GUI renders it with confirm/dismiss."""
@@ -134,6 +155,14 @@ class SplitPartsProposal(BaseModel):
 
     mode: Literal["children", "siblings"]
     parts: list[SplitPart] = Field(default_factory=list)
+
+
+class _Description(BaseModel):
+    description: str = ""
+
+
+class _CreateProposals(BaseModel):
+    proposals: list[Proposal] = Field(default_factory=list)
 
 
 def _strip_fence(text: str) -> str:
@@ -268,6 +297,71 @@ def propose_related(
         llm, prompt, _RELATED_GROUP_SYSTEM, TopicGroupProposal, "related grouping"
     )
     return _validate_topic_group(parsed, open_tasks), tokens
+
+
+def propose_description(session: Session, llm: LLMClient, task_id: int) -> tuple[str, int]:
+    """Write a one-paragraph task description from the task's attached nuggets.
+
+    One smart-tier LLM call (+ one retry). Requires at least one attached
+    nugget. Returns (description, tokens).
+    """
+    task = tasks.get_task(session, task_id)
+    attached = tasks.list_attached_nuggets(session, task_id)
+    if not attached:
+        raise ValueError("task has no attached nuggets to describe")
+    nugget_lines = "\n".join(f"- {n.summary}" for n in attached[:10]) or "- (none)"
+    prompt = (
+        f"Task: #{task.id} {task.title}\n"
+        f"Current description: {task.description or '(none)'}\n\n"
+        f"Attached nuggets:\n{nugget_lines}"
+    )
+    parsed, tokens = _parse_llm_json(llm, prompt, _DESCRIPTION_SYSTEM, _Description, "description")
+    description = parsed.description.strip()
+    if not description:
+        raise ValueError("LLM did not return a description")
+    return description, tokens
+
+
+def propose_inbox_creates(session: Session, llm: LLMClient) -> tuple[list[Proposal], int]:
+    """Propose new tasks that group clearly-related unattached inbox nuggets.
+
+    One smart-tier LLM call (+ one retry). Returns (proposals, tokens); each
+    proposal clusters ≥2 NEW nuggets under a new-task title. Nothing is
+    persisted — the GUI applies only the nuggets the user selects.
+    """
+    new_nuggets = list(session.scalars(select(Nugget).where(Nugget.status == NuggetStatus.NEW)))
+    if not new_nuggets:
+        return [], 0
+    nugget_lines = "\n".join(f"- #{n.id} {n.summary}" for n in new_nuggets) or "- (none)"
+    prompt = f"Unattached inbox items:\n{nugget_lines}"
+    parsed, tokens = _parse_llm_json(
+        llm, prompt, _INBOX_CREATE_SYSTEM, _CreateProposals, "inbox create proposals"
+    )
+    return _validate_inbox_creates(parsed.proposals, new_nuggets), tokens
+
+
+def _validate_inbox_creates(proposals: list[Proposal], new_nuggets: list[Nugget]) -> list[Proposal]:
+    """Keep only well-formed create proposals: unique non-empty titles, ≥2
+    disjoint NEW nuggets each, capped at ``_MAX_PROPOSALS``."""
+    new_ids = {n.id for n in new_nuggets}
+    used: set[int] = set()
+    seen_titles: set[str] = set()
+    valid: list[Proposal] = []
+    for proposal in proposals[:_MAX_PROPOSALS]:
+        if proposal.kind != "create":
+            continue
+        title = (proposal.title or "").strip()
+        nugget_ids = list(dict.fromkeys(proposal.nugget_ids))
+        if not title or title in seen_titles or len(nugget_ids) < 2:
+            continue
+        if not set(nugget_ids) <= new_ids or used & set(nugget_ids):
+            continue
+        proposal.title = title
+        proposal.nugget_ids = nugget_ids
+        seen_titles.add(title)
+        used.update(nugget_ids)
+        valid.append(proposal)
+    return valid
 
 
 def _validate(
@@ -494,3 +588,35 @@ def apply_group(
     for child_id in child_ids:
         tasks.update_task(session, child_id, parent_id=parent.id)
     return parent
+
+
+def apply_proposals(
+    session: Session,
+    proposals: list[Proposal],
+    jira_base_url: str | None = None,
+) -> list[str]:
+    """Apply a list of organization proposals in order.
+
+    Each proposal is applied via its deterministic ``apply_*`` helper; a
+    failing proposal is skipped and reported rather than aborting the batch.
+    Returns the list of error strings (empty when everything applied).
+    """
+    errors: list[str] = []
+    for proposal in proposals:
+        try:
+            if proposal.kind == "merge":
+                apply_merge(session, proposal.into_id or 0, proposal.from_id or 0)
+            elif proposal.kind == "split":
+                apply_split(
+                    session,
+                    proposal.task_id or 0,
+                    proposal.nugget_ids,
+                    proposal.title or "",
+                )
+            elif proposal.kind == "create":
+                apply_create(session, proposal.title or "", proposal.nugget_ids, jira_base_url)
+            elif proposal.kind == "retitle":
+                tasks.update_task(session, proposal.task_id or 0, title=proposal.title or "")
+        except (ValueError, NotFoundError) as exc:
+            errors.append(f"{proposal.kind}: {exc}")
+    return errors

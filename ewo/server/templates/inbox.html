@@ -37,6 +37,10 @@
           <button class="btn btn-sm" type="submit" title="Recompute suggested tasks for new nuggets">Suggest tasks</button>
           <span id="suggest-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
         </form>
+        <form hx-post="/gui/inbox/suggest-creates" hx-target="#inbox-create-result" hx-indicator="#create-spinner" class="flex gap-2 items-center">
+          <button class="btn btn-sm" type="submit" title="AI proposes new tasks from clusters of unmapped notes">Suggest new tasks</button>
+          <span id="create-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
+        </form>
         {% endif %}
         <form hx-get="/gui/inbox" hx-target="#inbox-list" hx-trigger="change" class="flex gap-2">
           <select class="select select-bordered select-sm" name="status">
@@ -54,6 +58,7 @@
         selected task (or a new one); <b>Dismiss</b> if it isn't actionable; <b>Already done</b> if the note
         is stale — the note itself is never modified.
       </p>
+      <div id="inbox-create-result"></div>
       <div id="inbox-list">
         {% include "_inbox.html" %}
       </div>
