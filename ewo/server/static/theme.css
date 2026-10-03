@@ -52,6 +52,22 @@
   background-color: transparent; /* normal: no fill */
 }
 
+/* --- priority pills (full/dark main colours) --- */
+.priority-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  padding: 0.05rem 0.55rem;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.priority-critical { background-color: #CC3311; color: #ffffff; }
+.priority-high     { background-color: #EE7733; color: #241303; }
+.priority-normal   { background-color: #888888; color: #ffffff; }
+.priority-low      { background-color: #33BBEE; color: #003048; }
+
 /* --- status colours --- */
 .status-open        { color: #888888; }
 .status-in_progress { color: #0077BB; }

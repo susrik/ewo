@@ -77,8 +77,8 @@
     <table class="table table-xs mt-1">
       <tbody>
         <tr class="row-priority-{{ task.parent.priority.value }}">
-          <td class="min-w-0"><a class="link link-hover break-words" href="#task-{{ task.parent.id }}">{{ task.parent.title }}</a></td>
-          <td><span class="badge badge-outline badge-xs">{{ task.parent.priority.value }}</span></td>
+          <td class="min-w-0"><a class="link link-hover break-words" href="/tasks?focus={{ task.parent.id }}">{{ task.parent.title }}</a></td>
+          <td><span class="priority-pill priority-{{ task.parent.priority.value }}">{{ task.parent.priority.value }}</span></td>
           <td class="whitespace-nowrap">{{ task.parent.assignee.name if task.parent.assignee else "—" }}</td>
         </tr>
       </tbody>
@@ -96,8 +96,8 @@
       <tbody>
         {% for child in task.children %}
         <tr class="row-priority-{{ child.priority.value }}">
-          <td class="min-w-0"><a class="link link-hover break-words" href="#task-{{ child.id }}">{{ child.title }}</a></td>
-          <td><span class="badge badge-outline badge-xs">{{ child.priority.value }}</span></td>
+          <td class="min-w-0"><a class="link link-hover break-words" href="/tasks?focus={{ child.id }}">{{ child.title }}</a></td>
+          <td><span class="priority-pill priority-{{ child.priority.value }}">{{ child.priority.value }}</span></td>
           <td class="whitespace-nowrap">{{ child.assignee.name if child.assignee else "—" }}</td>
           <td class="whitespace-nowrap">
             <button class="btn btn-xs btn-ghost" hx-post="/gui/tasks/{{ child.id }}/detach" hx-target="#task-{{ task.id }}-detail" title="Remove from this parent">Detach</button>

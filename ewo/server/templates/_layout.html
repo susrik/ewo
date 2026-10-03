@@ -28,5 +28,18 @@
   <main class="container mx-auto p-4">
     {% block content %}{% endblock %}
   </main>
+  <script>
+    (function () {
+      var focusId = new URLSearchParams(window.location.search).get("focus");
+      if (!focusId) return;
+      var row = document.getElementById("task-" + focusId);
+      if (!row) return;
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      var detail = document.getElementById("task-" + focusId + "-detail");
+      if (detail && window.htmx && detail.childElementCount === 0) {
+        htmx.ajax("GET", "/gui/tasks/" + focusId + "/detail", { target: detail });
+      }
+    })();
+  </script>
 </body>
 </html>

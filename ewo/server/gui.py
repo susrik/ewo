@@ -198,6 +198,7 @@ def tasks_page(
     tag_match: Literal["any", "all"] = "any",
     source: str = "",
     include_closed: bool = False,
+    focus: str = "",
 ) -> HTMLResponse:
     saved = _saved_filter(request, session)
     if saved is not None:
@@ -208,6 +209,9 @@ def tasks_page(
         tag_match = str(saved.get("tag_match", tag_match))  # type: ignore[assignment]
         source = str(saved.get("source", source))
         include_closed = bool(saved.get("include_closed", include_closed))
+    # a focus link must land on its target even if it is closed
+    if _opt_int(focus) is not None:
+        include_closed = True
     context = _task_context(session, status, assignee, tag, tags, tag_match, source, include_closed)
     context["page"] = "tasks"
     context["llm_enabled"] = bool(config.llm.api_key)

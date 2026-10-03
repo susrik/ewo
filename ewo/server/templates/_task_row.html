@@ -13,7 +13,7 @@
     </div>
   </td>
   <td>{{ task.assignee.name if task.assignee else "—" }}</td>
-  <td><span class="badge badge-outline badge-sm {% if task.priority.value == 'critical' %}badge-error{% elif task.priority.value == 'high' %}badge-warning{% endif %}">{{ task.priority.value }}</span></td>
+  <td><span class="priority-pill priority-{{ task.priority.value }}">{{ task.priority.value }}</span></td>
   <td class="{% if task.due_date and task.due_date < today and task.status.value not in ['done', 'dropped'] %}text-error font-semibold{% endif %}">{{ task.due_date.isoformat() if task.due_date else "—" }}</td>
   <td>
     <select class="select select-bordered select-xs status-{{ task.status.value }}" name="status"

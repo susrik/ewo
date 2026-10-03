@@ -162,8 +162,10 @@ def test_task_hierarchy_display_and_edit(client: TestClient) -> None:
     [child] = [t for t in client.get("/api/tasks").json() if t["title"] == "story"]
     child_detail = client.get(f"/gui/tasks/{child['id']}/detail")
     assert "Parent" in child_detail.text and "epic" in child_detail.text
+    assert f"/tasks?focus={parent['id']}" in child_detail.text
     parent_detail = client.get(f"/gui/tasks/{parent['id']}/detail")
     assert "Sub-tasks" in parent_detail.text and "story" in parent_detail.text
+    assert f"/tasks?focus={child['id']}" in parent_detail.text
 
     edit_form = client.get(f"/gui/tasks/{parent['id']}/edit")
     assert 'name="parent_id"' in edit_form.text
@@ -228,6 +230,26 @@ def test_task_sort(client: TestClient) -> None:
 
     reversed_ = client.get("/gui/tasks", params={"sort": "title", "reverse": "true"}).text
     assert reversed_.index("high task") < reversed_.index("critical task")
+
+
+def test_priority_pill_colors(client: TestClient) -> None:
+    client.post("/api/tasks", json={"title": "critical", "priority": "critical"})
+    client.post("/api/tasks", json={"title": "high", "priority": "high"})
+    client.post("/api/tasks", json={"title": "low", "priority": "low"})
+
+    listing = client.get("/gui/tasks").text
+    assert "priority-pill priority-critical" in listing
+    assert "priority-pill priority-high" in listing
+    assert "priority-pill priority-low" in listing
+
+
+def test_tasks_page_focus_include_closed(client: TestClient) -> None:
+    closed = client.post("/api/tasks", json={"title": "closed focus"}).json()
+    client.patch(f"/api/tasks/{closed['id']}", json={"status": "done"})
+
+    # hidden by default, shown when it is the focus target
+    assert "closed focus" not in client.get("/tasks").text
+    assert "closed focus" in client.get("/tasks", params={"focus": str(closed["id"])}).text
 
 
 def test_task_detach_from_parent(client: TestClient) -> None:
