@@ -14,19 +14,8 @@
           <option value="">(unassigned)</option>
           {% for person in people %}<option value="{{ person.id }}" {% if task.assignee_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
         </select>
-        <div class="parent-picker dropdown" title="Make this a sub-task of…">
-          <div tabindex="0" role="button" class="btn btn-sm btn-ghost">
-            parent: <span class="parent-label">{{ task.parent.title if task.parent else "none" }}</span>
-          </div>
-          <div tabindex="0" class="dropdown-content z-20 w-64 p-2 shadow bg-base-100 rounded-box">
-            <input type="hidden" name="parent_id" class="parent-id" value="{{ task.parent_id or '' }}">
-            <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
-                   hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
-                   hx-target="#task-{{ task.id }}-parent-results"
-                   hx-vals='{"mode": "parent", "task_id": "{{ task.id }}"}' autocomplete="off">
-            <div id="task-{{ task.id }}-parent-results" class="mt-1"></div>
-            <button type="button" class="btn btn-xs mt-1" onclick="clearParentTask(this)">remove parent</button>
-          </div>
+        <div id="task-{{ task.id }}-parent-picker">
+          {% include "_parent_picker.html" %}
         </div>
         <input class="input input-bordered input-sm" type="date" name="start_date" title="Start date" value="{{ task.start_date.isoformat() if task.start_date else '' }}">
         <input class="input input-bordered input-sm" type="date" name="due_date" title="Due date" value="{{ task.due_date.isoformat() if task.due_date else '' }}">

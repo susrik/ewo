@@ -168,9 +168,9 @@ def test_task_hierarchy_display_and_edit(client: TestClient) -> None:
     assert f"/tasks?focus={child['id']}" in parent_detail.text
 
     edit_form = client.get(f"/gui/tasks/{parent['id']}/edit")
-    assert 'name="parent_id"' in edit_form.text
-    # the parent select must not offer the task itself
-    assert f'value="{parent["id"]}"' not in edit_form.text
+    assert "parent-picker" in edit_form.text
+    assert "New parent title" in edit_form.text  # create-a-parent option
+    assert 'parent-label">none</span>' in edit_form.text  # the parent task has no parent
 
     saved = client.post(
         f"/gui/tasks/{parent['id']}",
@@ -184,11 +184,11 @@ def test_task_hierarchy_display_and_edit(client: TestClient) -> None:
     assert saved.status_code == 200
     assert client.get(f"/api/tasks/{parent['id']}").json()["start_date"] == "2026-09-20"
 
-    # a closed current parent stays selectable in the child's edit form
+    # a closed current parent is still shown as the child's selected parent
     client.patch(f"/api/tasks/{parent['id']}", json={"status": "done"})
     [child] = [t for t in client.get("/api/tasks").json() if t["title"] == "story"]
     child_edit = client.get(f"/gui/tasks/{child['id']}/edit")
-    assert f'value="{parent["id"]}"' in child_edit.text
+    assert 'parent-label">epic</span>' in child_edit.text
 
 
 def test_task_detail_children_and_links(client: TestClient) -> None:
@@ -271,7 +271,8 @@ def test_task_search_substring_and_exclusions(client: TestClient) -> None:
     ).text
     assert "parent one" not in parent_only
     assert "child one" not in parent_only
-    assert f'data-id="{sibling["id"]}"' in parent_only
+    assert "sibling one" in parent_only
+    assert f'"parent_id": "{sibling["id"]}"' in parent_only
 
 
 def test_add_existing_child_reparent_with_confirmation(client: TestClient) -> None:
@@ -301,6 +302,35 @@ def test_add_existing_child_reparent_with_confirmation(client: TestClient) -> No
 
     # a non-numeric task_id on the search endpoint resolves with no exclusions
     assert client.get("/gui/tasks/search", params={"q": "a", "task_id": "abc"}).status_code == 200
+
+
+def test_reparent_immediate_and_create_parent(client: TestClient) -> None:
+    existing = client.post("/api/tasks", json={"title": "existing parent"}).json()
+    task = client.post("/api/tasks", json={"title": "task"}).json()
+
+    # selecting an existing parent reassigns immediately and re-renders the picker
+    picker = client.post(
+        f"/gui/tasks/{task['id']}/reparent", data={"parent_id": str(existing["id"])}
+    )
+    assert 'parent-label">existing parent</span>' in picker.text
+    assert client.get(f"/api/tasks/{task['id']}").json()["parent_id"] == existing["id"]
+
+    # creating a brand-new parent assigns it too
+    created = client.post(
+        f"/gui/tasks/{task['id']}/parent/new", data={"parent_title": "fresh parent"}
+    )
+    assert 'parent-label">fresh parent</span>' in created.text
+    parents = [t for t in client.get("/api/tasks").json() if t["title"] == "fresh parent"]
+    assert client.get(f"/api/tasks/{task['id']}").json()["parent_id"] == parents[0]["id"]
+
+    # an empty title is a no-op that still re-renders the current picker
+    unchanged = client.post(f"/gui/tasks/{task['id']}/parent/new", data={"parent_title": "   "})
+    assert 'parent-label">fresh parent</span>' in unchanged.text
+
+    # removing a parent clears it
+    removed = client.post(f"/gui/tasks/{task['id']}/reparent", data={"parent_id": ""})
+    assert 'parent-label">none</span>' in removed.text
+    assert client.get(f"/api/tasks/{task['id']}").json()["parent_id"] is None
 
 
 def test_reparent_cycle_is_rejected(client: TestClient) -> None:

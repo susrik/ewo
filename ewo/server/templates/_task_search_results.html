@@ -3,7 +3,9 @@
   {% for t in results %}
   {% if mode == 'parent' %}
   <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2"
-          data-id="{{ t.id }}" data-title="{{ t.title }}" onclick="pickParentTask(this)">
+          hx-post="/gui/tasks/{{ task_id }}/reparent"
+          hx-vals='{"parent_id": "{{ t.id }}"}'
+          hx-target="#task-{{ task_id }}-parent-picker">
     <span class="priority-pill priority-{{ t.priority.value }}">{{ t.priority.value }}</span>
     <span class="text-left min-w-0 break-words">{{ t.title }}</span>
   </button>

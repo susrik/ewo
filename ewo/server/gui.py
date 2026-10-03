@@ -636,7 +636,6 @@ def task_update(
     priority: Annotated[str, Form()],
     status: Annotated[str, Form()],
     assignee_id: Annotated[str, Form()] = "",
-    parent_id: Annotated[str, Form()] = "",
     start_date: Annotated[str, Form()] = "",
     due_date: Annotated[str, Form()] = "",
     tags: Annotated[str, Form()] = "",
@@ -651,7 +650,6 @@ def task_update(
         priority=TaskPriority(priority),
         status=TaskStatus(status),
         assignee_id=_opt_int(assignee_id),
-        parent_id=_opt_int(parent_id),
         start_date=_opt_date(start_date),
         due_date=_opt_date(due_date),
         description=description.strip() or None,
@@ -660,6 +658,32 @@ def task_update(
     if added and tags_core.descendant_ids(session, task_id):
         return _render(request, "_task_row_oob.html", {"task": task, "added_tags": added})
     return _render(request, "_task_row.html", {"task": task})
+
+
+@router.post("/gui/tasks/{task_id}/reparent", response_class=HTMLResponse)
+def task_reparent(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    parent_id: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """(Re)assign a task's parent immediately; re-render only its parent picker."""
+    tasks.update_task(session, task_id, parent_id=_opt_int(parent_id))
+    return _render(request, "_parent_picker.html", {"task": tasks.get_task(session, task_id)})
+
+
+@router.post("/gui/tasks/{task_id}/parent/new", response_class=HTMLResponse)
+def task_new_parent(
+    request: Request,
+    task_id: int,
+    session: SessionDep,
+    parent_title: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Create a brand-new parent task and assign it; re-render the picker."""
+    if parent_title.strip():
+        parent = tasks.create_task(session, title=parent_title.strip())
+        tasks.update_task(session, task_id, parent_id=parent.id)
+    return _render(request, "_parent_picker.html", {"task": tasks.get_task(session, task_id)})
 
 
 @router.post("/gui/tasks/{task_id}/merge", response_class=HTMLResponse)

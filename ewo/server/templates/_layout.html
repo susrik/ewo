@@ -29,18 +29,6 @@
     {% block content %}{% endblock %}
   </main>
   <script>
-    function pickParentTask(btn) {
-      var picker = btn.closest(".parent-picker");
-      picker.querySelector("input.parent-id").value = btn.getAttribute("data-id");
-      picker.querySelector(".parent-label").textContent = btn.getAttribute("data-title");
-      picker.querySelector("[id$='-parent-results']").innerHTML = "";
-    }
-    function clearParentTask(btn) {
-      var picker = btn.closest(".parent-picker");
-      picker.querySelector("input.parent-id").value = "";
-      picker.querySelector(".parent-label").textContent = "none";
-      picker.querySelector("[id$='-parent-results']").innerHTML = "";
-    }
     (function () {
       var focusId = new URLSearchParams(window.location.search).get("focus");
       if (!focusId) return;
