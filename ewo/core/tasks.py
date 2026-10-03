@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime import date
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ewo.core.people import NotFoundError
@@ -123,7 +123,7 @@ def search_tasks(
     )
     if exclude_ids:
         stmt = stmt.where(Task.id.not_in(exclude_ids))
-    return list(session.scalars(stmt.order_by(Task.title).limit(limit)))
+    return list(session.scalars(stmt.order_by(func.lower(Task.title)).limit(limit)))
 
 
 _PRIORITY_RANK = {

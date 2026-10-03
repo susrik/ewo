@@ -170,7 +170,7 @@ def test_task_hierarchy_display_and_edit(client: TestClient) -> None:
     edit_form = client.get(f"/gui/tasks/{parent['id']}/edit")
     assert "parent-picker" in edit_form.text
     assert "New parent title" in edit_form.text  # create-a-parent option
-    assert 'parent-label">none</span>' in edit_form.text  # the parent task has no parent
+    assert "(re)select parent task" in edit_form.text
 
     saved = client.post(
         f"/gui/tasks/{parent['id']}",
@@ -184,11 +184,11 @@ def test_task_hierarchy_display_and_edit(client: TestClient) -> None:
     assert saved.status_code == 200
     assert client.get(f"/api/tasks/{parent['id']}").json()["start_date"] == "2026-09-20"
 
-    # a closed current parent is still shown as the child's selected parent
+    # a closed current parent is still listed in the child's detail panel
     client.patch(f"/api/tasks/{parent['id']}", json={"status": "done"})
     [child] = [t for t in client.get("/api/tasks").json() if t["title"] == "story"]
-    child_edit = client.get(f"/gui/tasks/{child['id']}/edit")
-    assert 'parent-label">epic</span>' in child_edit.text
+    child_detail = client.get(f"/gui/tasks/{child['id']}/detail")
+    assert "epic" in child_detail.text and f"/tasks?focus={parent['id']}" in child_detail.text
 
 
 def test_task_detail_children_and_links(client: TestClient) -> None:
@@ -267,7 +267,7 @@ def test_task_search_substring_and_exclusions(client: TestClient) -> None:
     # parent mode excludes the task itself and its descendants
     parent_only = client.get(
         "/gui/tasks/search",
-        params={"q": "one", "mode": "parent", "task_id": str(parent["id"])},
+        params={"q": "one", "action": "parent", "task_id": str(parent["id"])},
     ).text
     assert "parent one" not in parent_only
     assert "child one" not in parent_only
@@ -312,24 +312,29 @@ def test_reparent_immediate_and_create_parent(client: TestClient) -> None:
     picker = client.post(
         f"/gui/tasks/{task['id']}/reparent", data={"parent_id": str(existing["id"])}
     )
-    assert 'parent-label">existing parent</span>' in picker.text
+    assert "(re)select parent task" in picker.text
+    assert "existing parent" in picker.text  # the displayed parent updates immediately
     assert client.get(f"/api/tasks/{task['id']}").json()["parent_id"] == existing["id"]
 
     # creating a brand-new parent assigns it too
     created = client.post(
         f"/gui/tasks/{task['id']}/parent/new", data={"parent_title": "fresh parent"}
     )
-    assert 'parent-label">fresh parent</span>' in created.text
+    assert "(re)select parent task" in created.text
+    assert "fresh parent" in created.text
     parents = [t for t in client.get("/api/tasks").json() if t["title"] == "fresh parent"]
     assert client.get(f"/api/tasks/{task['id']}").json()["parent_id"] == parents[0]["id"]
 
     # an empty title is a no-op that still re-renders the current picker
     unchanged = client.post(f"/gui/tasks/{task['id']}/parent/new", data={"parent_title": "   "})
-    assert 'parent-label">fresh parent</span>' in unchanged.text
+    assert "(re)select parent task" in unchanged.text
+    assert "fresh parent" in unchanged.text
+    assert client.get(f"/api/tasks/{task['id']}").json()["parent_id"] == parents[0]["id"]
 
     # removing a parent clears it
     removed = client.post(f"/gui/tasks/{task['id']}/reparent", data={"parent_id": ""})
-    assert 'parent-label">none</span>' in removed.text
+    assert "(re)select parent task" in removed.text
+    assert "No parent task" in removed.text
     assert client.get(f"/api/tasks/{task['id']}").json()["parent_id"] is None
 
 
@@ -496,12 +501,91 @@ def test_task_merge_from_edit(client: TestClient, session: Session) -> None:
 
     edit = client.get(f"/gui/tasks/{loser['id']}/edit")
     assert "Merge this task into" in edit.text
-    assert f'value="{into["id"]}"' in edit.text
+
+    # candidates surface through the unified search picker, excluding the task itself
+    search = client.get(
+        "/gui/tasks/search", params={"q": "surv", "action": "merge", "task_id": str(loser["id"])}
+    )
+    assert "survivor" in search.text and f'"into_id": "{into["id"]}"' in search.text
+    assert "to merge" not in search.text  # never merge into itself
 
     merged = client.post(f"/gui/tasks/{loser['id']}/merge", data={"into_id": str(into["id"])})
     assert merged.status_code == 200
     assert client.get(f"/api/tasks/{loser['id']}").status_code == 404
     assert client.get(f"/api/tasks/{into['id']}").status_code == 200
+
+
+def test_detail_parent_control_and_subtask_picker(client: TestClient) -> None:
+    task = client.post("/api/tasks", json={"title": "root"}).json()
+
+    # the detail panel offers the parent picker and a single unified sub-task button
+    detail = client.get(f"/gui/tasks/{task['id']}/detail")
+    assert "parent-picker" in detail.text
+    assert "(re)select parent task" in detail.text
+    assert "No parent task" in detail.text
+    assert "Add sub-task" in detail.text
+    assert "Add existing task" not in detail.text  # no second, competing mechanism
+
+    # the child picker's search offers candidates via action=child
+    other = client.post("/api/tasks", json={"title": "leaf"}).json()
+    child_results = client.get(
+        "/gui/tasks/search", params={"q": "lea", "action": "child", "task_id": str(task["id"])}
+    ).text
+    assert "leaf" in child_results and f'"child_id": "{other["id"]}"' in child_results
+
+    # picking a parent from the detail panel reassigns and re-renders the picker
+    picked = client.post(f"/gui/tasks/{task['id']}/reparent", data={"parent_id": str(other["id"])})
+    assert "(re)select parent task" in picked.text
+    assert "leaf" in picked.text  # the panel's parent display updates in place
+    assert client.get(f"/api/tasks/{task['id']}").json()["parent_id"] == other["id"]
+
+
+def test_nugget_attach_and_move_search_actions(client: TestClient, session: Session) -> None:
+    first = client.post("/api/tasks", json={"title": "first"}).json()
+    second = client.post("/api/tasks", json={"title": "second"}).json()
+    item_id = _item(session)
+    client.post(f"/api/nuggets/{item_id}/attach", json={"task_id": first["id"]})
+
+    attach_results = client.get(
+        "/gui/tasks/search",
+        params={"q": "second", "action": "attach", "nugget_id": str(item_id)},
+    ).text
+    assert f'"task_id": "{second["id"]}"' in attach_results
+
+    move_results = client.get(
+        "/gui/tasks/search",
+        params={"q": "second", "action": "move", "nugget_id": str(item_id)},
+    ).text
+    assert f'"task_id": "{second["id"]}"' in move_results
+
+    # move excludes the nugget's current task
+    excluded = client.get(
+        "/gui/tasks/search",
+        params={"q": "first", "action": "move", "nugget_id": str(item_id)},
+    ).text
+    assert "first" not in excluded and "No matching tasks" in excluded
+
+    # a move search against an unknown nugget degrades to no exclusions
+    missing = client.get(
+        "/gui/tasks/search",
+        params={"q": "first", "action": "move", "nugget_id": "999999"},
+    )
+    assert missing.status_code == 200 and "first" in missing.text
+
+
+def test_task_search_scrolls_all_matches(client: TestClient) -> None:
+    client.app.state.config.gui.task_picker_max_visible = 5  # type: ignore[attr-defined]
+    for i in range(12):
+        client.post("/api/tasks", json={"title": f"scroll candidate {i:02d}"})
+
+    results = client.get("/gui/tasks/search", params={"q": "scroll candidate"}).text
+
+    # all matches are returned and scrollable (not capped at the visible threshold)
+    assert results.count("scroll candidate") == 12
+    assert "overflow-y-auto" in results
+    assert "max-height" in results
+    # titles truncate rather than wrapping over the controls below
+    assert "truncate" in results and "shrink-0" in results
 
 
 def test_task_description_suggest_apply(client: TestClient, session: Session) -> None:
@@ -1004,7 +1088,7 @@ def test_inbox_page_and_actions(client: TestClient, session: Session) -> None:
 
     # cancel returns to the plain attach form
     cancel = client.get(f"/gui/nuggets/{item_id}/attach-form")
-    assert "→ new task" in cancel.text
+    assert "New task…" in cancel.text
 
     created = client.post(
         f"/gui/nuggets/{item_id}/create",

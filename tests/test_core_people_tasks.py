@@ -264,6 +264,13 @@ def test_search_tasks(session: Session) -> None:
         t.id not in excluded for t in tasks.search_tasks(session, "export", exclude_ids=excluded)
     )
 
+    # results sort case-insensitively by name
+    tasks.create_task(session, "sort Zebra")
+    tasks.create_task(session, "sort apple")
+    tasks.create_task(session, "sort Banana")
+    ordered = [t.title for t in tasks.search_tasks(session, "sort")]
+    assert ordered == ["sort apple", "sort Banana", "sort Zebra"]
+
 
 def test_notes_and_links(session: Session) -> None:
     task = tasks.create_task(session, "with note")

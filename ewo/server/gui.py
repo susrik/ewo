@@ -49,6 +49,10 @@ ConfigDep = Annotated[Config, Depends(get_config)]
 
 _CLOSED = {TaskStatus.DONE, TaskStatus.DROPPED}
 
+# Safety cap for picker search results; the GUI lists all matches and scrolls
+# them (the visible-rows threshold is config.gui.task_picker_max_visible).
+_SEARCH_LIMIT = 200
+
 
 def _render(request: Request, name: str, context: dict[str, object]) -> HTMLResponse:
     context.setdefault("statuses", list(TaskStatus))
@@ -104,12 +108,6 @@ def _search_exclusions(session: Session, task_id: int) -> set[int]:
     """A task and its descendants — never offer these as a parent or child."""
     task = tasks.get_task(session, task_id)
     return _descendant_ids(task) | {task.id}
-
-
-def _merge_candidates(session: Session, task: Task) -> list[Task]:
-    """Open tasks *task* may be merged into (not itself, not its descendants)."""
-    excluded = _descendant_ids(task) | {task.id}
-    return [t for t in tasks.list_tasks(session) if t.id not in excluded]
 
 
 def _task_context(
@@ -588,26 +586,48 @@ def organize_split_apply(
 def task_search(
     request: Request,
     session: SessionDep,
+    config: ConfigDep,
     q: str = "",
-    mode: Literal["parent", "child"] = "parent",
+    action: Literal["parent", "child", "merge", "attach", "move"] = "parent",
     task_id: str = "",
+    nugget_id: str = "",
 ) -> HTMLResponse:
     """Substring search over open task titles, rendered as selectable rows.
 
-    ``mode`` picks the select action: ``parent`` fills the edit form's parent
-    slot via JS, ``child`` posts a re-parent request to ``task_id``."""
-    tid: int | None = None
-    if task_id.strip():
+    ``action`` picks the select behaviour of each result row (re-parent, add
+    child, merge into, or attach/move a nugget) and the exclusion set applied
+    to the search. All matches are returned (up to a safety cap) and scrolled
+    in a list capped at ``config.gui.task_picker_max_visible`` visible rows."""
+
+    def _opt(v: str) -> int | None:
         try:
-            tid = int(task_id)
+            return int(v)
         except ValueError:
-            tid = None
-    exclude_ids = _search_exclusions(session, tid) if tid is not None else set()
-    results = tasks.search_tasks(session, q, exclude_ids=exclude_ids)
+            return None
+
+    tid = _opt(task_id) if task_id.strip() else None
+    nid = _opt(nugget_id) if nugget_id.strip() else None
+    exclude_ids: set[int] = set()
+    if action in ("parent", "child", "merge") and tid is not None:
+        exclude_ids = _search_exclusions(session, tid)
+    elif action == "move" and nid is not None:
+        try:
+            source = nuggets.get_nugget(session, nid)
+            if source.task_id is not None:
+                exclude_ids = {source.task_id}
+        except NotFoundError:
+            pass
+    results = tasks.search_tasks(session, q, exclude_ids=exclude_ids, limit=_SEARCH_LIMIT)
     return _render(
         request,
         "_task_search_results.html",
-        {"results": results, "mode": mode, "task_id": tid or ""},
+        {
+            "results": results,
+            "action": action,
+            "task_id": tid or "",
+            "nugget_id": nid or "",
+            "max_visible": max(1, config.gui.task_picker_max_visible),
+        },
     )
 
 
@@ -791,7 +811,6 @@ def task_detach(
 def _detail_context(session: Session, task_id: int, llm_enabled: bool = False) -> dict[str, object]:
     return {
         "task": tasks.get_task(session, task_id),
-        "open_tasks": tasks.list_tasks(session),
         "kinds": list(NuggetKind),
         "llm_enabled": llm_enabled,
     }
@@ -802,7 +821,6 @@ def _edit_context(session: Session, task_id: int, llm_enabled: bool = False) -> 
     return {
         "task": task,
         "people": people.list_people(session),
-        "merge_candidates": _merge_candidates(session, task),
         "llm_enabled": llm_enabled,
     }
 

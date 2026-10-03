@@ -32,6 +32,7 @@ def test_defaults() -> None:
     assert config.notes.window_days == 60
     assert config.nugget.default_priority == "normal"
     assert config.nugget.default_assignee_self is True
+    assert config.gui.task_picker_max_visible == 10
 
 
 def test_notes_root_expands_user() -> None:

@@ -30,14 +30,13 @@
         <span class="font-semibold text-xs">Jira tickets:</span>
         {% include "_task_jira.html" %}
       </div>
-      <form hx-post="/gui/tasks/{{ task.id }}/merge" hx-target="#task-list" class="flex gap-2 items-center"
-            hx-confirm="This deletes this task, moving its nuggets, notes, sub-tasks and links onto the selected task. Continue?">
-        <select class="select select-bordered select-sm max-w-64" name="into_id" title="Merge this task into another" required>
-          <option value="">Merge this task into…</option>
-          {% for candidate in merge_candidates %}<option value="{{ candidate.id }}">#{{ candidate.id }} {{ candidate.title }}</option>{% endfor %}
-        </select>
-        <button class="btn btn-sm btn-warning" type="submit">Merge</button>
-      </form>
+      <div class="flex items-center">
+        {% set action = 'merge' %}
+        {% set task_id = task.id %}
+        {% set nugget_id = '' %}
+        {% set label = 'Merge this task into…' %}
+        {% include "_task_picker.html" %}
+      </div>
       {% if llm_enabled %}
       <div>
         <div class="font-semibold text-xs mb-1">Split (AI)</div>

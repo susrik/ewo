@@ -1,25 +1,12 @@
-<div class="parent-picker dropdown" title="Make this a sub-task of…">
-  <div tabindex="0" role="button" class="btn btn-sm btn-ghost">
-    parent: <span class="parent-label">{{ task.parent.title if task.parent else "none" }}</span>
-  </div>
-  <div tabindex="0" class="dropdown-content z-20 w-64 p-2 shadow bg-base-100 rounded-box">
-    <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
-           hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
-           hx-target="#task-{{ task.id }}-parent-results"
-           hx-vals='{"mode": "parent", "task_id": "{{ task.id }}"}' autocomplete="off">
-    <div id="task-{{ task.id }}-parent-results" class="mt-1"></div>
-    <div class="flex gap-1 mt-1">
-      <input id="task-{{ task.id }}-new-parent-title" class="input input-bordered input-xs flex-1"
-             name="parent_title" placeholder="New parent title…"
-             hx-post="/gui/tasks/{{ task.id }}/parent/new"
-             hx-trigger="keyup[key=='Enter']" hx-target="#task-{{ task.id }}-parent-picker">
-      <button type="button" class="btn btn-xs" title="Create and assign"
-              hx-post="/gui/tasks/{{ task.id }}/parent/new"
-              hx-include="#task-{{ task.id }}-new-parent-title"
-              hx-target="#task-{{ task.id }}-parent-picker">＋</button>
-    </div>
-    <button type="button" class="btn btn-xs btn-ghost mt-1"
-            hx-post="/gui/tasks/{{ task.id }}/reparent" hx-vals='{"parent_id": ""}'
-            hx-target="#task-{{ task.id }}-parent-picker">remove parent</button>
-  </div>
+{% if task.parent %}
+<div class="text-sm">
+  Parent: <a class="link link-hover break-words" href="/tasks?focus={{ task.parent.id }}">#{{ task.parent.id }} {{ task.parent.title }}</a>
 </div>
+{% else %}
+<div class="text-sm opacity-60">No parent task.</div>
+{% endif %}
+{% set action = 'parent' %}
+{% set task_id = task.id %}
+{% set nugget_id = '' %}
+{% set label = '(re)select parent task' %}
+{% include "_task_picker.html" %}

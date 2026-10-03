@@ -1,23 +1,31 @@
 {% if results %}
-<div class="grid gap-1">
+<div class="grid gap-1 overflow-y-auto" style="max-height: {{ max_visible * 1.75 }}rem">
   {% for t in results %}
-  {% if mode == 'parent' %}
-  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2"
-          hx-post="/gui/tasks/{{ task_id }}/reparent"
-          hx-vals='{"parent_id": "{{ t.id }}"}'
+  {% if action == 'parent' %}
+  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2 w-full"
+          hx-post="/gui/tasks/{{ task_id }}/reparent" hx-vals='{"parent_id": "{{ t.id }}"}'
           hx-target="#task-{{ task_id }}-parent-picker">
-    <span class="priority-pill priority-{{ t.priority.value }}">{{ t.priority.value }}</span>
-    <span class="text-left min-w-0 break-words">{{ t.title }}</span>
-  </button>
-  {% else %}
-  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2"
-          hx-post="/gui/tasks/{{ task_id }}/children/existing"
-          hx-vals='{"child_id": "{{ t.id }}"}'
+  {% elif action == 'child' %}
+  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2 w-full"
+          hx-post="/gui/tasks/{{ task_id }}/children/existing" hx-vals='{"child_id": "{{ t.id }}"}'
           hx-target="#task-{{ task_id }}-detail">
-    <span class="priority-pill priority-{{ t.priority.value }}">{{ t.priority.value }}</span>
-    <span class="text-left min-w-0 break-words">{{ t.title }}</span>
-  </button>
+  {% elif action == 'merge' %}
+  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2 w-full"
+          hx-post="/gui/tasks/{{ task_id }}/merge" hx-vals='{"into_id": "{{ t.id }}"}'
+          hx-target="#task-list"
+          hx-confirm="This deletes this task, moving its nuggets, notes, sub-tasks and links onto #{{ t.id }} {{ t.title }}. Continue?">
+  {% elif action == 'attach' %}
+  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2 w-full"
+          hx-post="/gui/nuggets/{{ nugget_id }}/attach" hx-vals='{"task_id": "{{ t.id }}"}'
+          hx-target="#nugget-{{ nugget_id }}" hx-swap="outerHTML">
+  {% else %}
+  <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2 w-full"
+          hx-post="/gui/nuggets/{{ nugget_id }}/move" hx-vals='{"task_id": "{{ t.id }}"}'
+          hx-target="#task-{{ task_id }}-detail">
   {% endif %}
+    <span class="priority-pill priority-{{ t.priority.value }} shrink-0">{{ t.priority.value }}</span>
+    <span class="flex-1 min-w-0 truncate text-left">{{ t.title }}</span>
+  </button>
   {% endfor %}
 </div>
 {% else %}

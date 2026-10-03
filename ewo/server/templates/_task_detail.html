@@ -37,15 +37,11 @@
             <button class="btn btn-xs" type="submit">Save</button>
           </form>
           <div class="flex flex-wrap gap-1 mt-1 items-center">
-            <form hx-post="/gui/nuggets/{{ nugget.id }}/move" hx-target="#task-{{ task.id }}-detail" class="flex gap-1 items-center">
-              <select class="select select-bordered select-xs max-w-56" name="task_id">
-                <option value="{{ task.id }}" selected>#{{ task.id }} {{ task.title }} (current)</option>
-                {% for other in open_tasks %}
-                {% if other.id != task.id %}<option value="{{ other.id }}">#{{ other.id }} {{ other.title }}</option>{% endif %}
-                {% endfor %}
-              </select>
-              <button class="btn btn-xs btn-ghost" type="submit">Move</button>
-            </form>
+            {% set action = 'move' %}
+            {% set task_id = task.id %}
+            {% set nugget_id = nugget.id %}
+            {% set label = 'Move to…' %}
+            {% include "_task_picker.html" %}
             <button class="btn btn-xs btn-ghost" hx-post="/gui/nuggets/{{ nugget.id }}/detach" hx-target="#task-{{ task.id }}-detail" title="Remove from this task (back to the inbox)">Detach</button>
           </div>
         </div>
@@ -73,19 +69,9 @@
 
   <div>
     <h3 class="font-semibold">Parent</h3>
-    {% if task.parent %}
-    <table class="table table-xs mt-1">
-      <tbody>
-        <tr class="row-priority-{{ task.parent.priority.value }}">
-          <td class="min-w-0"><a class="link link-hover break-words" href="/tasks?focus={{ task.parent.id }}">{{ task.parent.title }}</a></td>
-          <td><span class="priority-pill priority-{{ task.parent.priority.value }}">{{ task.parent.priority.value }}</span></td>
-          <td class="whitespace-nowrap">{{ task.parent.assignee.name if task.parent.assignee else "—" }}</td>
-        </tr>
-      </tbody>
-    </table>
-    {% else %}
-    <p class="opacity-60">No parent task.</p>
-    {% endif %}
+    <div id="task-{{ task.id }}-parent-picker" class="mt-1">
+      {% include "_parent_picker.html" %}
+    </div>
   </div>
 
   <div>
@@ -109,20 +95,11 @@
     {% else %}
     <p class="opacity-60">No sub-tasks.</p>
     {% endif %}
-    <form hx-post="/gui/tasks/{{ task.id }}/children" hx-target="#task-{{ task.id }}-detail" class="flex gap-2 mt-1">
-      <input class="input input-bordered input-sm flex-1" name="title" placeholder="Add a sub-task" required>
-      <button class="btn btn-sm" type="submit">Add</button>
-    </form>
-    <div class="dropdown mt-1">
-      <div tabindex="0" role="button" class="btn btn-sm btn-ghost">Add existing task…</div>
-      <div tabindex="0" class="dropdown-content z-20 w-64 p-2 shadow bg-base-100 rounded-box">
-        <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
-               hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
-               hx-target="#task-{{ task.id }}-child-results"
-               hx-vals='{"mode": "child", "task_id": "{{ task.id }}"}' autocomplete="off">
-        <div id="task-{{ task.id }}-child-results" class="mt-1"></div>
-      </div>
-    </div>
+    {% set action = 'child' %}
+    {% set task_id = task.id %}
+    {% set nugget_id = '' %}
+    {% set label = 'Add sub-task' %}
+    <div class="mt-1">{% include "_task_picker.html" %}</div>
   </div>
 
   <div>
