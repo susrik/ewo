@@ -11,11 +11,12 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
-from ewo.db.models import Task
+from ewo.db.models import JobLogEntry, Task
 
 
 @dataclass
@@ -60,3 +61,13 @@ def run_housekeeping(session: Session) -> HousekeepingSummary:
     summary = propagate_parent_tags(session)
     session.commit()
     return summary
+
+
+def prune_job_logs(session: Session, retention_days: int) -> int:
+    """Delete job-log entries older than *retention_days* (0 = keep forever)."""
+    if retention_days <= 0:
+        return 0
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=retention_days)
+    result = session.execute(delete(JobLogEntry).where(JobLogEntry.created_at < cutoff))
+    session.commit()
+    return int(getattr(result, "rowcount", 0) or 0)

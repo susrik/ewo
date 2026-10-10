@@ -15,11 +15,13 @@ human confirms in the inbox.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import perf_counter
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ewo.core.job_log import JobLog
 from ewo.core.llm import LLMClient
 from ewo.core.nuggets import norm_words
 from ewo.db.models import Nugget, NuggetStatus, Task, TaskStatus
@@ -165,6 +167,7 @@ def _match_chunk(
     candidates: list[Nugget],
     tasks: list[Task],
     attached: dict[int, list[str]],
+    log: JobLog | None = None,
 ) -> tuple[_MatchResult, int]:
     """One LLM call (plus one retry on invalid JSON). Returns (result, tokens)."""
     task_lines = (
@@ -183,8 +186,14 @@ def _match_chunk(
             request += (
                 f"\n\nYour previous reply was not valid JSON ({last_error}). Reply with JSON only."
             )
+        if log is not None:
+            log.llm_call(False, request, system=_SYSTEM, retry=bool(attempt))
+        started = perf_counter()
         result = llm.complete(request, system=_SYSTEM, smart=False)
+        elapsed_ms = (perf_counter() - started) * 1000.0
         tokens += result.tokens_used
+        if log is not None:
+            log.llm_reply(False, result.tokens_used, elapsed_ms=elapsed_ms, retry=bool(attempt))
         try:
             return _MatchResult.model_validate_json(_strip_fence(result.text)), tokens
         except ValidationError as exc:
@@ -196,6 +205,7 @@ def suggest_matches(
     session: Session,
     llm: LLMClient,
     nugget_ids: list[int] | None = None,
+    log: JobLog | None = None,
 ) -> SuggestSummary:
     """Compute suggested tasks for NEW nuggets; store them on the nuggets."""
     summary = SuggestSummary()
@@ -206,10 +216,14 @@ def suggest_matches(
     if not candidates:
         return summary
     summary.reviewed = len(candidates)
+    if log is not None:
+        log.step(f"reviewing {len(candidates)} new nuggets")
 
     # deterministic pass: duplicates of already-attached nuggets
     deterministic = _suggest_from_attached(session, candidates)
     remaining = [n for n in candidates if n.id not in deterministic]
+    if log is not None:
+        log.info(f"{len(deterministic)} reused from earlier attach decisions")
 
     # LLM pass over the rest, in chunks
     tasks = _open_tasks(session)
@@ -218,10 +232,17 @@ def suggest_matches(
         attached = _attached_summaries(session, tasks)
         for start in range(0, len(remaining), _CHUNK):
             chunk = remaining[start : start + _CHUNK]
+            if log is not None:
+                log.step(
+                    f"matching chunk {start // _CHUNK + 1}/{(len(remaining) - 1) // _CHUNK + 1}: "
+                    f"{len(chunk)} items against {len(tasks)} tasks"
+                )
             try:
-                result, tokens = _match_chunk(llm, chunk, tasks, attached)
+                result, tokens = _match_chunk(llm, chunk, tasks, attached, log=log)
             except ValueError as exc:
                 summary.errors.append(str(exc))
+                if log is not None:
+                    log.error(str(exc))
                 continue
             summary.tokens += tokens
             task_ids = {task.id for task in tasks}

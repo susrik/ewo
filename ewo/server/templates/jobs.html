@@ -12,7 +12,7 @@
           <tr>
             <td class="font-mono">{{ name }}</td>
             <td class="font-mono text-sm">{{ cron or "—" }}</td>
-            <td><button class="btn btn-xs" hx-post="/gui/jobs/{{ name }}/run" hx-target="#job-runs" hx-indicator="#job-spinner">run now</button></td>
+            <td><button class="btn btn-xs" hx-post="/gui/jobs/{{ name }}/run" hx-target="#job-log-view" hx-indicator="#job-spinner">run now</button></td>
           </tr>
           {% endfor %}
         </tbody>
@@ -21,12 +21,32 @@
     </div>
   </section>
 
+  {% if running %}
+  <section class="card bg-primary bg-opacity-10 shadow border-primary">
+    <div class="card-body py-3">
+      <div class="flex flex-wrap items-center gap-2 text-sm">
+        <span class="loading loading-spinner loading-sm text-primary"></span>
+        <span>Running:</span>
+        {% for run in running %}
+        <button class="btn btn-xs" hx-get="/gui/jobs/{{ run.id }}/log-view" hx-target="#job-log-view">{{ run.job_name }} #{{ run.id }}</button>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
   <section class="card bg-base-100 shadow">
     <div class="card-body">
-      <h2 class="card-title">Recent runs</h2>
-      <div id="job-runs" hx-get="/gui/job-runs" hx-trigger="every 30s">
+      <div class="flex items-center gap-2">
+        <h2 class="card-title flex-1">Recent runs</h2>
+        <form hx-post="/gui/job-logs/clear" hx-target="#job-runs" hx-confirm="Clear all job logs? This cannot be undone.">
+          <button class="btn btn-xs btn-ghost text-error">clear all logs</button>
+        </form>
+      </div>
+      <div id="job-runs" hx-get="/gui/job-runs" hx-trigger="every 5s">
         {% include "_job_runs.html" %}
       </div>
+      <div id="job-log-view" class="mt-2"></div>
     </div>
   </section>
 

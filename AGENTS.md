@@ -67,6 +67,9 @@ the per-topic guides. Short pointers:
   `ewo jobs run <name> [--full]`. Long jobs: `wait=false` / `--no-wait` runs
   in a daemon thread and returns 202 with the run id; dead-process runs are
   failed at startup (`mark_interrupted_runs`).
+- Job logs: runs append an append-only `JobLogEntry` log (`core/job_log.py`)
+  with per-call LLM detail; the GUI streams it live over SSE
+  (`jobs/broadcast.py`, DB is the source of truth). See [docs/jobs.md](docs/jobs.md).
 - Notes pipeline: `core/notes.py` (reader) → `core/note_extract.py` (LLM,
   `notes_scan`) → `Nugget` inbox (`core/nuggets.py`) → attach links the nugget
   to a task via an `ExternalLink(system="notes", …)`. See [`docs/inbox.md`](docs/inbox.md).

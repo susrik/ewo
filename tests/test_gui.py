@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
 from datetime import date, timedelta
 from pathlib import Path
@@ -19,6 +20,20 @@ def _item(session: Session, summary: str = "chase Matti", path: str = "eurohpc/x
     item, _ = nuggets.upsert_nugget(session, path, 34, summary, NuggetKind.ACTION, "- chase")
     session.commit()
     return item.id
+
+
+def _wait_for_run(client: TestClient, job_name: str, timeout: float = 5) -> dict:
+    """Poll /api/jobs/runs until the most recent *job_name* run finishes."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        runs = client.get("/api/jobs/runs").json()
+        for run in runs:
+            if run["job_name"] == job_name:
+                if run["status"] != "running":
+                    return run
+                break  # newest matching run is still running — retry
+        time.sleep(0.05)
+    raise AssertionError(f"run {job_name} still running after {timeout}s")
 
 
 # --- dashboard ---
@@ -1181,8 +1196,11 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
             )
         ]
     )
-    proposal = client.post("/gui/inbox/suggest-creates")
-    assert "alpha beta" in proposal.text and "alpha thing" in proposal.text
+    posted = client.post("/gui/inbox/suggest-creates")
+    assert "inbox_suggest" in posted.text  # live job-log view streamed in
+    run = _wait_for_run(client, "inbox_suggest")
+    review = client.get(f"/gui/inbox/create-review?run_id={run['id']}")
+    assert "alpha beta" in review.text and "alpha thing" in review.text
 
     # untick one nugget: only the selected one becomes the new task
     created = client.post(
@@ -1200,20 +1218,22 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
     empty = client.post("/gui/inbox/create-group", data={"title": "   ", "nugget_ids": str(b)})
     assert "New task needs a title" in empty.text
 
-    # garbage LLM output surfaces inline, not a 500
+    # garbage LLM output fails the job; the review reports the failure inline
     client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
-    assert (
-        "did not return valid inbox create proposals"
-        in client.post("/gui/inbox/suggest-creates").text
-    )
+    client.post("/gui/inbox/suggest-creates")
+    failed = _wait_for_run(client, "inbox_suggest")
+    assert failed["status"] == "failed"
+    broken = client.get(f"/gui/inbox/create-review?run_id={failed['id']}")
+    assert "suggestion failed" in broken.text
 
 
 def test_inbox_suggest_button(client: TestClient, session: Session) -> None:
     _item(session)
-    # no llm key configured: the job fails but the inbox still re-renders
+    # the suggest action now runs nuggets_match in the background and streams a
+    # live job-log view in its place
     response = client.post("/gui/inbox/suggest", data={"status": "new", "owner": ""})
     assert response.status_code == 200
-    assert "chase Matti" in response.text
+    assert "nuggets_match" in response.text
 
 
 def test_inbox_dismiss_and_owner_filter(client: TestClient, session: Session) -> None:
@@ -1232,9 +1252,14 @@ def test_inbox_dismiss_and_owner_filter(client: TestClient, session: Session) ->
 
 
 def test_inbox_scan_button_when_disabled(client: TestClient) -> None:
+    # notes disabled → the run succeeds trivially; watching it streams a live log
     response = client.post("/gui/scan", data={"full": "false"})
     assert response.status_code == 200
-    assert "success" in response.text and "notes disabled" in response.text
+    assert "notes_scan" in response.text
+    run = _wait_for_run(client, "notes_scan")
+    assert run["status"] == "success"
+    result = client.get(f"/gui/scan-result/{run['id']}")
+    assert "success" in result.text and "notes disabled" in result.text
     assert "notes disabled" in client.get("/inbox").text  # last_scan shown
 
 
@@ -1299,4 +1324,34 @@ def test_jobs_page_and_run(client: TestClient) -> None:
     assert "No job runs yet" in client.get("/gui/job-runs").text
 
     response = client.post("/gui/jobs/what_next/run")
-    assert "what_next" in response.text and "success" in response.text
+    assert "what_next" in response.text  # live job-log view streams in
+    run = _wait_for_run(client, "what_next")
+    assert run["status"] == "success"
+    # the finished run now advertises its log in the runs table
+    assert "view (" in client.get("/gui/job-runs").text
+
+
+def test_job_log_view_and_events(client: TestClient) -> None:
+    run = client.post("/api/jobs/what_next/run").json()
+    run_id = run["id"]
+
+    view = client.get(f"/gui/jobs/{run_id}/log-view")
+    assert view.status_code == 200
+    assert "what_next" in view.text and "clear log" in view.text
+    assert "started" in view.text and "done" in view.text
+
+    # SSE replay for a finished run: entries then a terminal "done" event
+    stream = client.get(f"/gui/jobs/{run_id}/events")
+    assert stream.status_code == 200
+    assert "event: log" in stream.text and "event: done" in stream.text
+    assert "started" in stream.text
+
+    # an unknown run surfaces a friendly message (log view + SSE error event)
+    assert "not found" in client.get("/gui/jobs/999999/log-view").text
+    missing = client.get("/gui/jobs/999999/events")
+    assert "event: error" in missing.text
+
+    # clearing a run's log empties it
+    cleared = client.post(f"/gui/jobs/{run_id}/log/clear")
+    assert "No log entries" in cleared.text
+    assert client.get(f"/api/jobs/runs/{run_id}/log").json() == []

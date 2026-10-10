@@ -1,5 +1,5 @@
 <table class="table table-sm">
-  <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Result</th><th>Tokens</th></tr></thead>
+  <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Result</th><th>Tokens</th><th>Log</th></tr></thead>
   <tbody>
     {% for run in runs %}
     <tr>
@@ -15,9 +15,14 @@
         {% if run.error %}<details><summary class="cursor-pointer text-error">error</summary><pre class="text-xs whitespace-pre-wrap">{{ run.error[-1500:] }}</pre></details>{% endif %}
       </td>
       <td>{{ run.tokens_used }}</td>
+      <td>
+        {% if run.log_count %}
+        <button class="btn btn-xs btn-ghost" hx-get="/gui/jobs/{{ run.id }}/log-view" hx-target="#job-log-view">view ({{ run.log_count }})</button>
+        {% else %}<span class="opacity-40 text-xs">—</span>{% endif %}
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="5">No job runs yet.</td></tr>
+    <tr><td colspan="6">No job runs yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>

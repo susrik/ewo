@@ -1,0 +1,16 @@
+<div class="flex flex-wrap items-start gap-x-2 gap-y-0.5 py-0.5 text-sm{% if e.kind == 'error' %} text-error{% endif %}">
+  <span class="font-mono text-xs opacity-50">{{ e.time }}</span>
+  {% if e.kind == 'wait' %}<span class="loading loading-spinner loading-xs mt-0.5"></span>{% endif %}
+  <span class="min-w-0 break-words flex-1">{{ e.message }}</span>
+  <span class="flex flex-wrap gap-1 items-center">
+    {% if e.model %}<span class="badge badge-xs badge-outline">{{ e.model }}</span>{% endif %}
+    {% if e.tier %}<span class="badge badge-xs badge-ghost">{{ e.tier }}</span>{% endif %}
+    {% if e.prompt_chars is not none %}<span class="badge badge-xs badge-ghost">{{ e.prompt_chars }} chars</span>{% endif %}
+    {% if e.tokens is not none %}<span class="badge badge-xs badge-ghost">{{ e.tokens }} tok</span>{% endif %}
+    {% if e.elapsed_ms is not none %}<span class="badge badge-xs badge-ghost">{{ '%.1f'|format(e.elapsed_ms / 1000) }}s</span>{% endif %}
+    {% if e.retry %}<span class="badge badge-xs badge-warning">retry</span>{% endif %}
+  </span>
+  {% if e.preview %}
+  <details class="w-full"><summary class="cursor-pointer text-xs opacity-60">preview</summary><pre class="text-xs whitespace-pre-wrap break-all max-h-40 overflow-y-auto">{{ e.preview }}</pre></details>
+  {% endif %}
+</div>

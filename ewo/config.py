@@ -85,9 +85,17 @@ class ReportsRepoConfig(BaseModel):
 
 
 class JobsConfig(BaseModel):
-    """Cron-style schedules per job name; empty string disables the schedule."""
+    """Cron-style schedules per job name; empty string disables the schedule.
+
+    ``log_retention_days`` bounds how long per-run job logs are kept
+    (``0`` keeps them forever); the ``housekeeping`` job prunes older entries.
+    ``log_prompt_preview_chars`` caps the truncated prompt preview stored with
+    each LLM log entry.
+    """
 
     schedules: dict[str, str] = Field(default_factory=dict)
+    log_retention_days: int = 30
+    log_prompt_preview_chars: int = 600
 
 
 class NotesConfig(BaseModel):

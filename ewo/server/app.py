@@ -14,6 +14,7 @@ from ewo.config import Config, load_config
 from ewo.core.llm import LLMClient, OpenAILLM
 from ewo.db.session import make_engine, make_session_factory
 from ewo.jobs import builtin  # noqa: F401  (registers built-in jobs)
+from ewo.jobs.broadcast import BroadcastHub, set_hub
 from ewo.jobs.registry import mark_interrupted_runs, registry
 from ewo.jobs.scheduler import build_scheduler
 from ewo.server.api import router as api_router
@@ -25,6 +26,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: Config = app.state.config
+    app.state.broadcast_hub.attach(asyncio.get_running_loop())
+    set_hub(app.state.broadcast_hub)
     with app.state.session_factory() as session:
         mark_interrupted_runs(session)
     scheduler = build_scheduler(config, registry, app.state.session_factory, app.state.llm)
@@ -45,6 +48,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         discord_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await discord_task
+    set_hub(None)
 
 
 def create_app(config: Config | None = None, llm: LLMClient | None = None) -> FastAPI:
@@ -54,6 +58,7 @@ def create_app(config: Config | None = None, llm: LLMClient | None = None) -> Fa
     app.state.session_factory = make_session_factory(make_engine(resolved))
     app.state.llm = llm or OpenAILLM(resolved.llm)
     app.state.job_registry = registry
+    app.state.broadcast_hub = BroadcastHub()
     app.include_router(api_router)
     app.include_router(gui_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

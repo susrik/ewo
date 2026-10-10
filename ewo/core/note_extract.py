@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from time import perf_counter
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from ewo.config import NotesConfig
 from ewo.core import nuggets
+from ewo.core.job_log import JobLog
 from ewo.core.llm import LLMClient
 from ewo.core.notes import (
     NotesReader,
@@ -121,6 +123,7 @@ def extract_items(
     path: str,
     body: str,
     today: date,
+    log: JobLog | None = None,
 ) -> tuple[ExtractionResult, int]:
     """One LLM call (plus one retry on invalid JSON). Returns (result, tokens)."""
     system = _SYSTEM
@@ -135,8 +138,14 @@ def extract_items(
             request += (
                 f"\n\nYour previous reply was not valid JSON ({last_error}). Reply with JSON only."
             )
+        if log is not None:
+            log.llm_call(True, request, system=system, retry=bool(attempt))
+        started = perf_counter()
         result = llm.complete(request, system=system, smart=True)
+        elapsed_ms = (perf_counter() - started) * 1000.0
         tokens += result.tokens_used
+        if log is not None:
+            log.llm_reply(True, result.tokens_used, elapsed_ms=elapsed_ms, retry=bool(attempt))
         try:
             return ExtractionResult.model_validate_json(_strip_fence(result.text)), tokens
         except ValidationError as exc:
@@ -160,6 +169,7 @@ def scan_notes(
     since: datetime | None,
     job_run_id: int | None = None,
     today: date | None = None,
+    log: JobLog | None = None,
 ) -> ScanSummary:
     """Scan notes changed since *since* (or the whole window when None)."""
     today = today or date.today()
@@ -168,8 +178,12 @@ def scan_notes(
     people = list_people(session)
     roster = roster_text(people)
     summary = ScanSummary()
+    if log is not None:
+        log.step(f"scanning notes (window since {window_start.isoformat()})")
 
     for note in reader.changed_since(since, window_start):
+        if log is not None:
+            log.step(f"extracting {note.path}")
         lines = numbered_lines(reader.read(note.path))
         if note.path.rsplit("/", 1)[-1] in ROLLING_FILENAMES:
             lines = in_window_lines(lines, window_start)
@@ -181,12 +195,16 @@ def scan_notes(
         summary.files += 1
         try:
             result, tokens = extract_items(
-                llm, reader.context_chain(note.path), roster, note.path, body, today
+                llm, reader.context_chain(note.path), roster, note.path, body, today, log=log
             )
         except ValueError as exc:
             summary.errors.append(str(exc))
+            if log is not None:
+                log.error(f"{note.path}: {exc}")
             continue
         summary.tokens += tokens
+        if log is not None:
+            log.info(f"{note.path}: {len(result.items)} items")
         line_text = dict(lines)
         for extracted in result.items:
             owner = resolve_person(session, extracted.owner, note.path)

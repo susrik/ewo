@@ -30,6 +30,15 @@ For each nugget:
 Reviewed nuggets are never re-surfaced by later scans; re-seen open nuggets
 bump `last_seen_at`, nudging their linked task up in *What next*.
 
+## Suggest new tasks
+
+"Suggest new tasks" (Inbox) asks the `inbox_suggest` [job](jobs.md) to propose
+tasks that group clusters of *unmatched* nuggets. It streams a live log while
+the LLM runs, then shows the proposals for review — nothing is created until
+you tick the nuggets and confirm. See [Jobs](jobs.md#live-logs) for the
+streaming, and [Organize](organize.md) for the underlying stateless proposal
+logic.
+
 ## CLI
 
 ```sh

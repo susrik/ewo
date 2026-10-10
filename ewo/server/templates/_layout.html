@@ -41,5 +41,43 @@
       }
     })();
   </script>
+  <script>
+    // Live job-log streaming over SSE. Each rendered log view carries a
+    // [data-job-log-stream] element; on first sight we open an EventSource and
+    // append "log" events, then swap in refreshed content on "done".
+    function connectJobLogStream(el) {
+      if (el.dataset.connected) return;
+      el.dataset.connected = "1";
+      var runId = el.dataset.jobLogStream;
+      var after = el.dataset.after || "0";
+      var refreshUrl = el.dataset.refreshUrl;
+      var refreshTarget = el.dataset.refreshTarget;
+      var refresh2Url = el.dataset.refresh2Url;
+      var refresh2Target = el.dataset.refresh2Target;
+      var es = new EventSource("/gui/jobs/" + runId + "/events?after=" + encodeURIComponent(after));
+      es.addEventListener("log", function (e) {
+        var placeholder = el.querySelector("p.opacity-60");
+        if (placeholder && e.data) placeholder.remove();
+        try { el.insertAdjacentHTML("beforeend", JSON.parse(e.data).html); } catch (_) {}
+      });
+      es.addEventListener("done", function (e) {
+        es.close();
+        try {
+          var html = JSON.parse(e.data).html;
+          if (html) el.insertAdjacentHTML("beforeend", html);
+        } catch (_) {}
+        if (window.htmx && refreshUrl) htmx.ajax("GET", refreshUrl, { target: refreshTarget });
+        if (window.htmx && refresh2Url) htmx.ajax("GET", refresh2Url, { target: refresh2Target });
+      });
+      es.addEventListener("error", function (e) {
+        try {
+          if (e.data) el.insertAdjacentHTML("beforeend", JSON.parse(e.data).html);
+        } catch (_) {}
+      });
+    }
+    document.body.addEventListener("htmx:load", function () {
+      document.querySelectorAll("[data-job-log-stream]").forEach(connectJobLogStream);
+    });
+  </script>
 </body>
 </html>

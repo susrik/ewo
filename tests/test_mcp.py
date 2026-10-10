@@ -88,6 +88,7 @@ def test_build_server_registers_tools(config: Config, client: TestClient) -> Non
         "ewo_inbox_list",
         "ewo_inbox_attach",
         "ewo_inbox_resolve",
+        "ewo_job_log",
     }
 
 

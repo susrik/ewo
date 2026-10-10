@@ -18,8 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ewo.config import Config
+from ewo.core.job_log import JobLog
 from ewo.core.llm import LLMClient
 from ewo.db.models import JobRun, JobRunStatus, utcnow
+from ewo.jobs import broadcast
 
 
 @dataclass
@@ -36,6 +38,17 @@ class JobContext:
 
     def flag(self, name: str) -> bool:
         return self.params.get(name, "").lower() in {"1", "true", "yes"}
+
+    def log(self) -> JobLog:
+        """The run's live log; entries persist and broadcast to open views."""
+        return JobLog(
+            self.session,
+            self.job_run.id,
+            self.config.llm.model,
+            self.config.llm.smart_model,
+            preview_chars=self.config.jobs.log_prompt_preview_chars,
+            on_entry=lambda event_id, payload: broadcast.publish(self.job_run.id, payload),
+        )
 
 
 JobFunc = Callable[[JobContext], str | None]
@@ -79,14 +92,20 @@ class JobRegistry:
             context = JobContext(
                 session=session, config=config, llm=llm, job_run=job_run, params=params or {}
             )
+            log = context.log()
+            log.step(f"job '{name}' started")
             try:
                 job_run.result = self.jobs[name](context)
                 job_run.status = JobRunStatus.SUCCESS
+                log.step("done")
             except Exception:
                 job_run.status = JobRunStatus.FAILED
                 job_run.error = traceback.format_exc()
+                last_line = job_run.error.splitlines()[-1] if job_run.error else "unknown"
+                log.error(f"failed: {last_line}")
             job_run.finished_at = datetime.now(UTC).replace(tzinfo=None)
             session.commit()
+            broadcast.close(job_run.id)
             return job_run
 
     def run_async(

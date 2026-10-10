@@ -50,7 +50,9 @@
       "daily_report": "0 7 * * 1-5",
       "notes_scan": "0 6 * * 1-5",
       "housekeeping": "15 3 * * *"
-    }
+    },
+    "log_retention_days": 30,
+    "log_prompt_preview_chars": 600
   },
   "mcp": {
     "http_enabled": false,

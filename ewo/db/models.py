@@ -290,6 +290,43 @@ class JobRun(Base):
     result: Mapped[str | None] = mapped_column(String(500))
     error: Mapped[str | None] = mapped_column(Text)
     tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+
+    log_entries: Mapped[list[JobLogEntry]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="JobLogEntry.id"
+    )
+
+    @property
+    def log_count(self) -> int:
+        return len(self.log_entries)
+
+
+class JobLogKind(enum.StrEnum):
+    INFO = "info"
+    STEP = "step"
+    WAIT = "wait"
+    LLM = "llm"
+    ERROR = "error"
+
+
+class JobLogEntry(Base):
+    """One line of a job run's live log, streamed to the GUI and persisted.
+
+    ``message`` is the human-readable line; ``meta`` carries structured data the
+    GUI renders as badges (model, tier, prompt/token sizes, timings, prompt
+    preview).
+    """
+
+    __tablename__ = "job_log_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("job_runs.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(10))
+    message: Mapped[str] = mapped_column(Text)
+    meta: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    run: Mapped[JobRun] = relationship(back_populates="log_entries")
 
 
 class Report(Base):

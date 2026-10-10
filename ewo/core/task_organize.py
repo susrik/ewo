@@ -8,6 +8,7 @@ stateless); that keeps the schema simple.
 
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ewo.core import nuggets, tasks
+from ewo.core.job_log import JobLog
 from ewo.core.llm import LLMClient
 from ewo.core.people import NotFoundError
 from ewo.db.models import Nugget, NuggetStatus, Task, TaskSource, TaskStatus
@@ -174,7 +176,7 @@ def _strip_fence(text: str) -> str:
 
 
 def _parse_llm_json[T: BaseModel](
-    llm: LLMClient, prompt: str, system: str, model: type[T], what: str
+    llm: LLMClient, prompt: str, system: str, model: type[T], what: str, log: JobLog | None = None
 ) -> tuple[T, int]:
     """One smart-tier LLM call plus one retry; the reply must parse as *model*."""
     tokens = 0
@@ -185,8 +187,14 @@ def _parse_llm_json[T: BaseModel](
             request += (
                 f"\n\nYour previous reply was not valid JSON ({last_error}). Reply with JSON only."
             )
+        if log is not None:
+            log.llm_call(True, request, system=system, retry=bool(attempt))
+        started = perf_counter()
         result = llm.complete(request, system=system, smart=True)
+        elapsed_ms = (perf_counter() - started) * 1000.0
         tokens += result.tokens_used
+        if log is not None:
+            log.llm_reply(True, result.tokens_used, elapsed_ms=elapsed_ms, retry=bool(attempt))
         try:
             return model.model_validate_json(_strip_fence(result.text)), tokens
         except ValidationError as exc:
@@ -322,7 +330,9 @@ def propose_description(session: Session, llm: LLMClient, task_id: int) -> tuple
     return description, tokens
 
 
-def propose_inbox_creates(session: Session, llm: LLMClient) -> tuple[list[Proposal], int]:
+def propose_inbox_creates(
+    session: Session, llm: LLMClient, log: JobLog | None = None
+) -> tuple[list[Proposal], int]:
     """Propose new tasks that group clearly-related unattached inbox nuggets.
 
     One smart-tier LLM call (+ one retry). Returns (proposals, tokens); each
@@ -332,10 +342,12 @@ def propose_inbox_creates(session: Session, llm: LLMClient) -> tuple[list[Propos
     new_nuggets = list(session.scalars(select(Nugget).where(Nugget.status == NuggetStatus.NEW)))
     if not new_nuggets:
         return [], 0
+    if log is not None:
+        log.step(f"proposing tasks for {len(new_nuggets)} unmatched nuggets")
     nugget_lines = "\n".join(f"- #{n.id} {n.summary}" for n in new_nuggets) or "- (none)"
     prompt = f"Unattached inbox items:\n{nugget_lines}"
     parsed, tokens = _parse_llm_json(
-        llm, prompt, _INBOX_CREATE_SYSTEM, _CreateProposals, "inbox create proposals"
+        llm, prompt, _INBOX_CREATE_SYSTEM, _CreateProposals, "inbox create proposals", log=log
     )
     return _validate_inbox_creates(parsed.proposals, new_nuggets), tokens
 

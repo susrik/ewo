@@ -1,0 +1,18 @@
+<div class="mt-2 border rounded-lg p-3">
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="font-mono text-sm font-semibold">#{{ run.id }} {{ run.job_name }}</span>
+    <span class="badge badge-sm {% if run.status.value == 'success' %}badge-success{% elif run.status.value == 'failed' %}badge-error{% else %}badge-info{% endif %}">{{ run.status.value }}</span>
+    <span id="job-log-footer-{{ run.id }}" class="text-xs opacity-70"></span>
+    <span class="flex-1"></span>
+    <form hx-post="/gui/jobs/{{ run.id }}/log/clear" hx-target="#job-log-view" hx-swap="outerHTML" class="inline">
+      <button class="btn btn-xs btn-ghost">clear log</button>
+    </form>
+  </div>
+  <div class="mt-1 font-mono text-xs max-h-96 overflow-y-auto border-t pt-1"
+       data-job-log-stream="{{ run.id }}"
+       data-after="{{ after }}"
+       {% if refresh_url %}data-refresh-url="{{ refresh_url }}" data-refresh-target="{{ refresh_target }}"{% endif %}
+       {% if refresh2_url %}data-refresh2-url="{{ refresh2_url }}" data-refresh2-target="{{ refresh2_target }}"{% endif %}>
+    {% for e in entries %}{% include "_log_entry.html" %}{% else %}<p class="opacity-60">No log entries.</p>{% endfor %}
+  </div>
+</div>

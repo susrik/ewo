@@ -5,15 +5,15 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ewo.config import Config
 from ewo.core import nuggets, one_on_ones, people, reports, tags, tasks, whatnext
 from ewo.core.llm import LLMClient
 from ewo.core.notes import NotesReader
 from ewo.core.people import NotFoundError
-from ewo.db.models import JobRun, NuggetStatus, Report, TaskStatus
+from ewo.db.models import JobLogEntry, JobRun, NuggetStatus, Report, TaskStatus
 from ewo.jobs.registry import JobRegistry, UnknownJobError
 from ewo.server import schemas
 from ewo.server.deps import get_config, get_llm, get_registry, get_session, get_session_factory
@@ -370,7 +370,9 @@ def run_job(
     """Run a job — synchronously by default, in the background with wait=false."""
     try:
         if wait:
-            return registry.run(name, session_factory, config, llm, params={"full": str(full)})
+            run = registry.run(name, session_factory, config, llm, params={"full": str(full)})
+            # re-fetch in the request session so log_count serializes while attached
+            return session.get(JobRun, run.id)
         run_id = registry.run_async(name, session_factory, config, llm, params={"full": str(full)})
     except UnknownJobError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -380,4 +382,38 @@ def run_job(
 
 @router.get("/jobs/runs", response_model=list[schemas.JobRunOut])
 def list_job_runs(session: SessionDep, limit: int = 50) -> object:
-    return list(session.scalars(select(JobRun).order_by(JobRun.started_at.desc()).limit(limit)))
+    return list(
+        session.scalars(
+            select(JobRun)
+            .options(selectinload(JobRun.log_entries))
+            .order_by(JobRun.started_at.desc())
+            .limit(limit)
+        )
+    )
+
+
+@router.get("/jobs/runs/{run_id}/log", response_model=list[schemas.JobLogEntryOut])
+def get_job_log(run_id: int, session: SessionDep) -> object:
+    if session.get(JobRun, run_id) is None:
+        raise HTTPException(status_code=404, detail=f"job run {run_id} not found")
+    return list(
+        session.scalars(
+            select(JobLogEntry).where(JobLogEntry.run_id == run_id).order_by(JobLogEntry.id)
+        )
+    )
+
+
+@router.delete("/jobs/runs/{run_id}/log", response_model=schemas.MessageOut)
+def clear_job_log(run_id: int, session: SessionDep) -> object:
+    if session.get(JobRun, run_id) is None:
+        raise HTTPException(status_code=404, detail=f"job run {run_id} not found")
+    session.execute(delete(JobLogEntry).where(JobLogEntry.run_id == run_id))
+    session.commit()
+    return schemas.MessageOut(detail="cleared")
+
+
+@router.delete("/jobs/logs", response_model=schemas.MessageOut)
+def clear_all_job_logs(session: SessionDep) -> object:
+    session.execute(delete(JobLogEntry))
+    session.commit()
+    return schemas.MessageOut(detail="cleared")

@@ -7,15 +7,17 @@
                  successful scan into the inbox (``full=true`` rescans the
                  window), then suggest candidate tasks for the new nuggets
 - nuggets_match: (re)compute suggested tasks for unreviewed nuggets
-- housekeeping:  data-integrity sweep (additive parent-label propagation)
+- inbox_suggest: AI-propose new tasks grouping unmatched inbox nuggets
+- housekeeping:  data-integrity sweep (additive parent-label propagation), and
+                 prune expired job logs
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from ewo.core import reports
-from ewo.core.housekeeping import run_housekeeping
+from ewo.core import reports, task_organize
+from ewo.core.housekeeping import prune_job_logs, run_housekeeping
 from ewo.core.llm import LLMClient
 from ewo.core.note_extract import last_successful_scan, scan_notes
 from ewo.core.nugget_match import suggest_matches
@@ -86,11 +88,12 @@ def notes_scan(context: JobContext) -> str:
         notes.model_copy(update={"root": context.config.notes_root}),
         since=since,
         job_run_id=context.job_run.id,
+        log=context.log(),
     )
     context.add_tokens(summary.tokens)
     if summary.errors and summary.files == len(summary.errors):
         raise RuntimeError("; ".join(summary.errors))
-    match = suggest_matches(context.session, context.llm)
+    match = suggest_matches(context.session, context.llm, log=context.log())
     context.add_tokens(match.tokens)
     return f"{summary.as_text()} | {match.as_text()}"
 
@@ -99,11 +102,29 @@ def notes_scan(context: JobContext) -> str:
 def nuggets_match(context: JobContext) -> str:
     if not context.config.llm.api_key:
         raise RuntimeError("nuggets_match needs llm.api_key")
-    summary = suggest_matches(context.session, context.llm)
+    summary = suggest_matches(context.session, context.llm, log=context.log())
     context.add_tokens(summary.tokens)
     return summary.as_text()
 
 
+@registry.register("inbox_suggest")
+def inbox_suggest(context: JobContext) -> str:
+    """AI-propose new tasks grouping unmatched inbox nuggets; store the
+    serialized proposals on the run's ``payload`` for the GUI to render."""
+    if not context.config.llm.api_key:
+        raise RuntimeError("inbox_suggest needs llm.api_key")
+    proposals, tokens = task_organize.propose_inbox_creates(
+        context.session, context.llm, log=context.log()
+    )
+    context.add_tokens(tokens)
+    context.job_run.payload = {"proposals": [p.model_dump(exclude_none=True) for p in proposals]}
+    return f"proposals={len(proposals)} tokens={tokens}"
+
+
 @registry.register("housekeeping")
 def housekeeping(context: JobContext) -> str:
-    return run_housekeeping(context.session).as_text()
+    text = run_housekeeping(context.session).as_text()
+    pruned = prune_job_logs(context.session, context.config.jobs.log_retention_days)
+    if pruned:
+        text += f" pruned_logs={pruned}"
+    return text

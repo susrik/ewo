@@ -102,6 +102,11 @@ class EwoApi:
         response.raise_for_status()
         return dict(response.json())
 
+    def job_log(self, run_id: int) -> list[dict[str, Any]]:
+        response = self._client.get(f"/api/jobs/runs/{run_id}/log")
+        response.raise_for_status()
+        return list(response.json())
+
 
 def register_tools(server: MCPServer[Any], api: EwoApi) -> None:
     """Register all ewo tools on an MCPServer instance."""
@@ -157,3 +162,9 @@ def register_tools(server: MCPServer[Any], api: EwoApi) -> None:
     def ewo_inbox_resolve(item_id: int, already_done: bool = False) -> dict[str, Any]:
         """Dismiss a nugget, or mark it already finished (already_done=True)."""
         return api.resolve_inbox_item(item_id, already_done=already_done)
+
+    @server.tool()
+    def ewo_job_log(run_id: int) -> list[dict[str, Any]]:
+        """The live log of one job run: steps, which LLM model was used, prompt sizes,
+        and token counts. ``ewo jobs runs`` finds the run id."""
+        return api.job_log(run_id)

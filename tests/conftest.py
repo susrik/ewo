@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool
 
 from ewo.config import Config
 from ewo.core.llm import FakeLLM
@@ -32,11 +32,15 @@ def config(tmp_path: object) -> Config:
 
 
 @pytest.fixture()
-def engine() -> Iterator[object]:
+def engine(tmp_path: Path) -> Iterator[object]:
+    # A per-connection, file-backed SQLite: jobs run in daemon threads that touch
+    # the DB concurrently with the request thread, and a single pooled connection
+    # (StaticPool) is not safe across threads. NullPool gives every session its
+    # own connection over one file, with a busy timeout for the rare write clash.
     engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        f"sqlite:///{tmp_path / 'test.db'}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+        poolclass=NullPool,
     )
     Base.metadata.create_all(engine)
     yield engine
