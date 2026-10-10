@@ -53,6 +53,44 @@
           </select>
         </form>
       </div>
+      <div class="flex flex-wrap items-center gap-2 mt-2">
+        <input id="inbox-search" type="search" class="input input-bordered input-sm grow min-w-0 md:grow-0 md:w-64" placeholder="Filter nuggets…" autocomplete="off">
+        <span id="inbox-filtered-count" class="text-xs opacity-60"></span>
+      </div>
+      {% if filters.status == 'new' %}
+      <div class="flex flex-wrap items-center gap-2 mt-2" id="inbox-bulk">
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input id="inbox-select-all" type="checkbox" class="checkbox checkbox-xs" title="Select all visible nuggets">
+          <span>Select all</span>
+        </label>
+        <span id="inbox-selected-count" class="text-xs opacity-60">0 selected</span>
+        <details class="dropdown task-picker">
+          <summary tabindex="0" role="button" class="btn btn-sm btn-outline flex items-center gap-1">Attach to task… <span class="opacity-60">▾</span></summary>
+          <div class="dropdown-content z-20 w-80 p-2 shadow bg-base-100 rounded-box">
+            <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
+                   hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
+                   hx-target="#inbox-bulk-attach-results"
+                   hx-vals='{"action": "bulk_attach", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+                   autocomplete="off">
+            <div id="inbox-bulk-attach-results" class="mt-1"></div>
+          </div>
+        </details>
+        <form hx-post="/gui/inbox/bulk/attach" hx-include=".bulk-select:checked" hx-target="#inbox-list" class="flex items-center gap-1">
+          <input type="hidden" name="status" value="{{ filters.status }}">
+          <input type="hidden" name="owner" value="{{ filters.owner }}">
+          <input class="input input-bordered input-xs" name="title" placeholder="New task title…">
+          <button class="btn btn-xs" type="submit" title="Attach all selected to one new task">＋ New task</button>
+        </form>
+        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/bulk/done"
+                hx-include=".bulk-select:checked"
+                hx-vals='{"status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+                hx-target="#inbox-list">Already done</button>
+        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/bulk/dismiss"
+                hx-include=".bulk-select:checked"
+                hx-vals='{"status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+                hx-target="#inbox-list">Dismiss</button>
+      </div>
+      {% endif %}
       <p class="text-sm opacity-70">
         Nuggets (work items found in your notes), grouped by suggested task. <b>Attach</b> adds one to the
         selected task (or a new one); <b>Dismiss</b> if it isn't actionable; <b>Already done</b> if the note
@@ -66,4 +104,82 @@
   </section>
 
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    var search = document.getElementById("inbox-search");
+    var list = document.getElementById("inbox-list");
+    var selectAll = document.getElementById("inbox-select-all");
+    var selectedCount = document.getElementById("inbox-selected-count");
+    var filteredCount = document.getElementById("inbox-filtered-count");
+
+    function rows() {
+      return list ? list.querySelectorAll(".nugget-row") : [];
+    }
+    function visibleRows() {
+      var out = [];
+      rows().forEach(function (row) {
+        if (!row.classList.contains("hidden")) out.push(row);
+      });
+      return out;
+    }
+    function rowBox(row) {
+      return row.querySelector(".bulk-select");
+    }
+
+    function updateSelection() {
+      var boxes = list ? list.querySelectorAll(".nugget-row:not(.hidden) .bulk-select") : [];
+      var checked = 0, total = 0;
+      boxes.forEach(function (cb) { total++; if (cb.checked) checked++; });
+      if (selectedCount) selectedCount.textContent = checked + " selected";
+      if (selectAll) {
+        selectAll.checked = total > 0 && checked === total;
+        selectAll.indeterminate = checked > 0 && checked < total;
+      }
+    }
+
+    function applyFilter() {
+      var q = (search && search.value ? search.value : "").trim().toLowerCase();
+      var shown = 0;
+      rows().forEach(function (row) {
+        var text = (row.dataset.search || "").toLowerCase();
+        var match = !q || text.indexOf(q) !== -1;
+        row.classList.toggle("hidden", !match);
+        if (match) {
+          shown++;
+        } else {
+          var cb = rowBox(row);
+          if (cb) cb.checked = false;
+        }
+      });
+      if (filteredCount) {
+        filteredCount.textContent = q ? "showing " + shown + " of " + rows().length : "";
+      }
+      updateSelection();
+    }
+
+    if (search) search.addEventListener("input", applyFilter);
+    if (selectAll) selectAll.addEventListener("change", function () {
+      visibleRows().forEach(function (row) {
+        var cb = rowBox(row);
+        if (cb) cb.checked = selectAll.checked;
+      });
+      updateSelection();
+    });
+    if (list) list.addEventListener("change", function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("bulk-select")) updateSelection();
+    });
+
+    document.body.addEventListener("htmx:afterSwap", function (e) {
+      if (!list) return;
+      if (e.detail.target === list || (e.detail.target && e.detail.target.contains && e.detail.target.contains(list))) {
+        applyFilter();
+      }
+    });
+
+    applyFilter();
+  })();
+</script>
 {% endblock %}

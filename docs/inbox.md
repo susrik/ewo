@@ -30,6 +30,24 @@ For each nugget:
 Reviewed nuggets are never re-surfaced by later scans; re-seen open nuggets
 bump `last_seen_at`, nudging their linked task up in *What next*.
 
+## Filtering and bulk actions
+
+New nuggets (the `new` view) can be handled in bulk:
+
+- **Filter** — a search box filters the visible nuggets by case-insensitive
+  match on the nugget title or note text. Filtering happens in the browser, so
+  it only ever affects what is currently shown.
+- **Select** — tick nuggets individually, or use *Select all* to tick every
+  visible nugget (uncheck it to clear the selection).
+- **Bulk actions** — apply **Attach to task…** (an existing task via the task
+  picker, or *＋ New task* to create one task from all selected), **Already
+  done**, or **Dismiss** to every selected nugget.
+
+Selection and bulk actions apply only to nuggets currently visible after
+filtering; hidden nuggets are never affected. The per-task *Attach selected*
+shortcut (when a suggested task groups several nuggets) remains available
+alongside the general selection.
+
 ## Suggest new tasks
 
 "Suggest new tasks" (Inbox) asks the `inbox_suggest` [job](jobs.md) to propose

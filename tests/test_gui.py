@@ -1251,6 +1251,98 @@ def test_inbox_dismiss_and_owner_filter(client: TestClient, session: Session) ->
     assert "dismissed" in dismissed.text
 
 
+def test_inbox_bulk_dismiss_and_done(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    c = _item(session, "gamma thing", "ai/c.md")
+
+    response = client.post("/gui/inbox/bulk/dismiss", data={"nugget_ids": [a, b]})
+    assert response.status_code == 200
+    new = client.get("/api/nuggets", params={"status": "new"}).json()
+    assert [n["id"] for n in new] == [c]
+    dismissed = client.get("/api/nuggets", params={"status": "dismissed"}).json()
+    assert {n["id"] for n in dismissed} == {a, b}
+
+    response = client.post("/gui/inbox/bulk/done", data={"nugget_ids": [c]})
+    assert response.status_code == 200
+    assert client.get("/api/nuggets", params={"status": "new"}).json() == []
+    done = client.get("/api/nuggets", params={"status": "already_done"}).json()
+    assert [n["id"] for n in done] == [c]
+
+
+def test_inbox_bulk_attach_existing(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "the topic"}).json()
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+
+    response = client.post(
+        "/gui/inbox/bulk/attach",
+        data={"task_id": str(task["id"]), "nugget_ids": [a, b]},
+    )
+    assert response.status_code == 200
+    assert "Nothing to review" in response.text
+    attached = client.get(f"/api/tasks/{task['id']}/nuggets").json()
+    assert {n["id"] for n in attached} == {a, b}
+
+
+def test_inbox_bulk_attach_new_task(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+
+    response = client.post(
+        "/gui/inbox/bulk/attach",
+        data={"title": "one task", "nugget_ids": [a, b]},
+    )
+    assert response.status_code == 200
+    tasks = client.get("/api/tasks").json()
+    assert [t["title"] for t in tasks] == ["one task"]
+    attached = client.get(f"/api/tasks/{tasks[0]['id']}/nuggets").json()
+    assert {n["id"] for n in attached} == {a, b}
+
+
+def test_inbox_bulk_attach_errors(client: TestClient, session: Session) -> None:
+    _item(session)
+
+    # nothing selected → inline error, nothing created
+    no_selection = client.post("/gui/inbox/bulk/attach", data={"task_id": "1"})
+    assert "Select at least one note" in no_selection.text
+
+    # selected but no target chosen → inline error
+    no_target = client.post("/gui/inbox/bulk/attach", data={"nugget_ids": [1]})
+    assert "Choose a task or enter a new-task title" in no_target.text
+
+
+def test_inbox_bulk_filter_markers(client: TestClient, session: Session) -> None:
+    _item(session)
+
+    page = client.get("/inbox")
+    assert 'id="inbox-search"' in page.text
+    assert 'id="inbox-select-all"' in page.text
+    assert "bulk-select" in page.text
+    assert "nugget-row" in page.text
+    assert "data-search=" in page.text
+    assert "/gui/inbox/bulk/dismiss" in page.text
+    assert "/gui/inbox/bulk/done" in page.text
+    assert "/gui/inbox/bulk/attach" in page.text
+
+    # the bulk toolbar is only shown for the "new" status view
+    all_page = client.get("/inbox", params={"status": "all"})
+    assert 'id="inbox-select-all"' not in all_page.text
+
+
+def test_inbox_bulk_attach_task_search(client: TestClient, session: Session) -> None:
+    client.post("/api/tasks", json={"title": "the topic"})
+    _item(session)
+
+    results = client.get(
+        "/gui/tasks/search",
+        params={"q": "topic", "action": "bulk_attach", "status": "new", "owner": ""},
+    )
+    assert results.status_code == 200
+    assert "/gui/inbox/bulk/attach" in results.text
+    assert ".bulk-select:checked" in results.text
+
+
 def test_inbox_scan_button_when_disabled(client: TestClient) -> None:
     # notes disabled → the run succeeds trivially; watching it streams a live log
     response = client.post("/gui/scan", data={"full": "false"})

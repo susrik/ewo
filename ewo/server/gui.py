@@ -591,9 +591,11 @@ def task_search(
     session: SessionDep,
     config: ConfigDep,
     q: str = "",
-    action: Literal["parent", "child", "merge", "attach", "move"] = "parent",
+    action: Literal["parent", "child", "merge", "attach", "move", "bulk_attach"] = "parent",
     task_id: str = "",
     nugget_id: str = "",
+    status: str = "new",
+    owner: str = "",
 ) -> HTMLResponse:
     """Substring search over open task titles, rendered as selectable rows.
 
@@ -630,6 +632,8 @@ def task_search(
             "task_id": tid or "",
             "nugget_id": nid or "",
             "max_visible": max(1, config.gui.task_picker_max_visible),
+            "status": status,
+            "owner": owner,
         },
     )
 
@@ -1106,6 +1110,70 @@ def inbox_create_group(
     context = _inbox_context(session, status, owner)
     context["inbox_create_error"] = error
     return _render(request, "_inbox_oob.html", context)
+
+
+def _bulk_nugget_ids(nugget_ids: list[int] | None) -> list[int]:
+    """The selected nugget ids, de-duplicated, in a stable order."""
+    return list(dict.fromkeys(nugget_ids or []))
+
+
+@router.post("/gui/inbox/bulk/attach", response_class=HTMLResponse)
+def inbox_bulk_attach(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+    task_id: Annotated[str, Form()] = "",
+    title: Annotated[str, Form()] = "",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Attach the selected nuggets to an existing task, or create one new task from them."""
+    ids = _bulk_nugget_ids(nugget_ids)
+    error: str | None = None
+    if not ids:
+        error = "Select at least one note to attach."
+    elif task_id.strip():
+        tid = int(task_id)
+        for nugget_id in ids:
+            nuggets.attach_nugget(
+                session, nugget_id, task_id=tid, jira_base_url=_jira_base_url(config)
+            )
+    elif title.strip():
+        task_organize.apply_create(
+            session, title.strip(), ids, jira_base_url=_jira_base_url(config)
+        )
+    else:
+        error = "Choose a task or enter a new-task title."
+    context = _inbox_context(session, status, owner)
+    context["inbox_create_error"] = error
+    return _render(request, "_inbox_oob.html", context)
+
+
+@router.post("/gui/inbox/bulk/dismiss", response_class=HTMLResponse)
+def inbox_bulk_dismiss(
+    request: Request,
+    session: SessionDep,
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    for nugget_id in _bulk_nugget_ids(nugget_ids):
+        nuggets.set_nugget_status(session, nugget_id, NuggetStatus.DISMISSED)
+    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+
+
+@router.post("/gui/inbox/bulk/done", response_class=HTMLResponse)
+def inbox_bulk_done(
+    request: Request,
+    session: SessionDep,
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    for nugget_id in _bulk_nugget_ids(nugget_ids):
+        nuggets.set_nugget_status(session, nugget_id, NuggetStatus.ALREADY_DONE)
+    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
 
 
 @router.post("/gui/nuggets/{nugget_id}/attach", response_class=HTMLResponse)

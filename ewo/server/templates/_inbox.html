@@ -21,9 +21,9 @@
   <div class="grid gap-2 mt-1">
     {% for nugget in group.nuggets %}
     {% if group.kind == 'task' %}
-    {% with group_form_id = "attach-group-" ~ group.task.id %}{% include "_nugget.html" %}{% endwith %}
+    {% with group_form_id = "attach-group-" ~ group.task.id, bulk_select = true %}{% include "_nugget.html" %}{% endwith %}
     {% else %}
-    {% include "_nugget.html" %}
+    {% with bulk_select = true %}{% include "_nugget.html" %}{% endwith %}
     {% endif %}
     {% endfor %}
   </div>
