@@ -1218,13 +1218,13 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
     empty = client.post("/gui/inbox/create-group", data={"title": "   ", "nugget_ids": str(b)})
     assert "New task needs a title" in empty.text
 
-    # garbage LLM output fails the job; the review reports the failure inline
+    # garbage LLM output is skipped per chunk; the run still succeeds with no proposals
     client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
     client.post("/gui/inbox/suggest-creates")
-    failed = _wait_for_run(client, "inbox_suggest")
-    assert failed["status"] == "failed"
-    broken = client.get(f"/gui/inbox/create-review?run_id={failed['id']}")
-    assert "suggestion failed" in broken.text
+    run = _wait_for_run(client, "inbox_suggest")
+    assert run["status"] == "success"
+    review = client.get(f"/gui/inbox/create-review?run_id={run['id']}")
+    assert "No new-task suggestions right now." in review.text
 
 
 def test_inbox_suggest_button(client: TestClient, session: Session) -> None:

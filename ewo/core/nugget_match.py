@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ewo.core.job_log import JobLog
-from ewo.core.llm import LLMClient
+from ewo.core.llm import LLMClient, backoff, is_retryable
 from ewo.core.nuggets import norm_words
 from ewo.db.models import Nugget, NuggetStatus, Task, TaskStatus
 
@@ -32,27 +32,6 @@ _MAX_ATTACHED = 3  # attached summaries shown per task in the prompt
 _ATTACHED_CHARS = 80  # max chars per attached summary
 _JACCARD_MIN = 0.6  # word-set overlap needed for a deterministic suggestion
 _ATTEMPTS = 4  # LLM calls per chunk before giving up (incl. a JSON retry)
-_RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}  # transient API errors worth retrying
-
-
-def _backoff(attempt: int) -> float:
-    """Exponential backoff: 1s, 2s, 4s, … capped at 8s."""
-    return float(min(2**attempt, 8))
-
-
-def _is_retryable(exc: Exception) -> bool:
-    """Transient LLM failures worth retrying (timeouts, throttling, 5xx).
-
-    ``openai`` is imported lazily so this module stays importable in tests and
-    in environments without the SDK; in production it is a core dependency.
-    """
-    try:
-        import openai
-    except ImportError:  # pragma: no cover - openai is a project dependency
-        return False
-    if isinstance(exc, (openai.APITimeoutError, openai.APIConnectionError, openai.RateLimitError)):
-        return True
-    return isinstance(exc, openai.APIStatusError) and exc.status_code in _RETRYABLE_STATUS
 
 
 _SYSTEM = """You match inbox items extracted from an engineering manager's notes to their
@@ -216,12 +195,12 @@ def _match_chunk(
         try:
             result = llm.complete(request, system=_SYSTEM, smart=True)
         except Exception as exc:
-            if _is_retryable(exc) and attempt < _ATTEMPTS - 1:
+            if is_retryable(exc) and attempt < _ATTEMPTS - 1:
                 if log is not None:
                     log.error(f"transient LLM error, retrying: {str(exc).splitlines()[0]}")
-                sleep(_backoff(attempt))
+                sleep(backoff(attempt))
                 continue
-            if _is_retryable(exc):
+            if is_retryable(exc):
                 raise ValueError(
                     f"LLM request failed after {_ATTEMPTS} attempts: {str(exc).splitlines()[0]}"
                 ) from exc

@@ -12,6 +12,28 @@ from typing import Any, Protocol
 
 from ewo.config import LLMConfig
 
+_RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}  # transient API errors worth retrying
+
+
+def backoff(attempt: int) -> float:
+    """Exponential backoff: 1s, 2s, 4s, … capped at 8s."""
+    return float(min(2**attempt, 8))
+
+
+def is_retryable(exc: Exception) -> bool:
+    """Transient LLM failures worth retrying (timeouts, throttling, 5xx).
+
+    ``openai`` is imported lazily so this module stays importable in tests and
+    in environments without the SDK; in production it is a core dependency.
+    """
+    try:
+        import openai
+    except ImportError:  # pragma: no cover - openai is a project dependency
+        return False
+    if isinstance(exc, (openai.APITimeoutError, openai.APIConnectionError, openai.RateLimitError)):
+        return True
+    return isinstance(exc, openai.APIStatusError) and exc.status_code in _RETRYABLE_STATUS
+
 
 @dataclass
 class LLMResult:

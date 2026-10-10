@@ -8,7 +8,7 @@ stateless); that keeps the schema simple.
 
 from __future__ import annotations
 
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from ewo.core import nuggets, tasks
 from ewo.core.job_log import JobLog
-from ewo.core.llm import LLMClient
+from ewo.core.llm import LLMClient, backoff, is_retryable
 from ewo.core.people import NotFoundError
 from ewo.db.models import Nugget, NuggetStatus, Task, TaskSource, TaskStatus
 
@@ -25,6 +25,9 @@ _MAX_PROPOSALS = 10
 _MAX_GROUP_TASKS = 20
 _MAX_SPLIT_PARTS = 8
 _MAX_RELATED_QUESTIONS = 3
+_INBOX_MAX_ITEMS = 200  # cap on NEW nuggets considered per inbox_suggest run
+_INBOX_CHUNK = 50  # nuggets per LLM call when proposing inbox creates
+_JSON_ATTEMPTS = 4  # LLM calls per parse before giving up (incl. the JSON retry)
 
 _SYSTEM = """You tidy an engineering manager's task list. Tasks collect "nuggets" (work items
 extracted from notes). Propose only clearly useful changes, at most 10, fewest possible:
@@ -175,22 +178,41 @@ def _strip_fence(text: str) -> str:
     return stripped.strip()
 
 
+def _validation_detail(exc: ValidationError) -> str:
+    """A compact but informative pydantic error (field + message, not just the top line)."""
+    text = str(exc).strip()
+    return text if len(text) <= 400 else text[:400] + "…"
+
+
 def _parse_llm_json[T: BaseModel](
     llm: LLMClient, prompt: str, system: str, model: type[T], what: str, log: JobLog | None = None
 ) -> tuple[T, int]:
-    """One smart-tier LLM call plus one retry; the reply must parse as *model*."""
+    """One smart-tier LLM call, retrying on invalid JSON and transient errors."""
     tokens = 0
     last_error = ""
-    for attempt in range(2):
+    for attempt in range(_JSON_ATTEMPTS):
         request = prompt
-        if attempt:
+        if attempt and last_error:
             request += (
                 f"\n\nYour previous reply was not valid JSON ({last_error}). Reply with JSON only."
             )
         if log is not None:
             log.llm_call(True, request, system=system, retry=bool(attempt))
         started = perf_counter()
-        result = llm.complete(request, system=system, smart=True)
+        try:
+            result = llm.complete(request, system=system, smart=True)
+        except Exception as exc:
+            if is_retryable(exc) and attempt < _JSON_ATTEMPTS - 1:
+                if log is not None:
+                    log.error(f"transient LLM error, retrying: {str(exc).splitlines()[0]}")
+                sleep(backoff(attempt))
+                continue
+            if is_retryable(exc):
+                raise ValueError(
+                    f"LLM request failed after {_JSON_ATTEMPTS} attempts: "
+                    f"{str(exc).splitlines()[0]}"
+                ) from exc
+            raise
         elapsed_ms = (perf_counter() - started) * 1000.0
         tokens += result.tokens_used
         if log is not None:
@@ -198,7 +220,7 @@ def _parse_llm_json[T: BaseModel](
         try:
             return model.model_validate_json(_strip_fence(result.text)), tokens
         except ValidationError as exc:
-            last_error = str(exc).splitlines()[0]
+            last_error = _validation_detail(exc)
     raise ValueError(f"LLM did not return valid {what}: {last_error}")
 
 
@@ -335,21 +357,54 @@ def propose_inbox_creates(
 ) -> tuple[list[Proposal], int]:
     """Propose new tasks that group clearly-related unattached inbox nuggets.
 
-    One smart-tier LLM call (+ one retry). Returns (proposals, tokens); each
-    proposal clusters ≥2 NEW nuggets under a new-task title. Nothing is
-    persisted — the GUI applies only the nuggets the user selects.
+    Considers the ``_INBOX_MAX_ITEMS`` most recently seen NEW nuggets, ordered
+    by ``(path, line)`` so items from the same note co-locate, and matches them
+    in bounded ``_INBOX_CHUNK`` batches. A chunk whose reply can't be parsed is
+    skipped (and logged) rather than failing the run. Returns (proposals,
+    tokens); each kept proposal clusters ≥2 NEW nuggets under a new-task title.
+    Nothing is persisted — the GUI applies only the nuggets the user selects.
     """
-    new_nuggets = list(session.scalars(select(Nugget).where(Nugget.status == NuggetStatus.NEW)))
+    new_nuggets = list(
+        session.scalars(
+            select(Nugget)
+            .where(Nugget.status == NuggetStatus.NEW)
+            .order_by(Nugget.last_seen_at.desc())
+            .limit(_INBOX_MAX_ITEMS)
+        )
+    )
     if not new_nuggets:
         return [], 0
+    # co-locate items from the same note so each chunk holds related work
+    new_nuggets.sort(key=lambda n: (n.path or "", n.line))
     if log is not None:
         log.step(f"proposing tasks for {len(new_nuggets)} unmatched nuggets")
-    nugget_lines = "\n".join(f"- #{n.id} {n.summary}" for n in new_nuggets) or "- (none)"
-    prompt = f"Unattached inbox items:\n{nugget_lines}"
-    parsed, tokens = _parse_llm_json(
-        llm, prompt, _INBOX_CREATE_SYSTEM, _CreateProposals, "inbox create proposals", log=log
-    )
-    return _validate_inbox_creates(parsed.proposals, new_nuggets), tokens
+    proposals: list[Proposal] = []
+    tokens = 0
+    for start in range(0, len(new_nuggets), _INBOX_CHUNK):
+        chunk = new_nuggets[start : start + _INBOX_CHUNK]
+        if log is not None:
+            log.step(
+                f"proposing chunk {start // _INBOX_CHUNK + 1}/"
+                f"{(len(new_nuggets) - 1) // _INBOX_CHUNK + 1}: {len(chunk)} items"
+            )
+        nugget_lines = "\n".join(f"- #{n.id} {n.summary}" for n in chunk) or "- (none)"
+        prompt = f"Unattached inbox items:\n{nugget_lines}"
+        try:
+            parsed, chunk_tokens = _parse_llm_json(
+                llm,
+                prompt,
+                _INBOX_CREATE_SYSTEM,
+                _CreateProposals,
+                "inbox create proposals",
+                log=log,
+            )
+        except ValueError as exc:
+            if log is not None:
+                log.error(str(exc))
+            continue
+        tokens += chunk_tokens
+        proposals.extend(parsed.proposals)
+    return _validate_inbox_creates(proposals, new_nuggets), tokens
 
 
 def _validate_inbox_creates(proposals: list[Proposal], new_nuggets: list[Nugget]) -> list[Proposal]:

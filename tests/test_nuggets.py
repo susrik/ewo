@@ -368,6 +368,72 @@ def _propose_response(*proposals: dict[str, object]) -> str:
     return json.dumps({"proposals": list(proposals)})
 
 
+def _create_response(*groups: tuple[list[int], str]) -> str:
+    return json.dumps(
+        {
+            "proposals": [
+                {"kind": "create", "nugget_ids": list(ids), "title": title, "reason": "x"}
+                for ids, title in groups
+            ]
+        }
+    )
+
+
+def test_propose_inbox_creates_chunks_and_merges(session: Session) -> None:
+    items = [_nugget(session, f"cluster item {i}", path="notes/a.md", line=i) for i in range(100)]
+    llm = FakeLLM(
+        responses=[
+            _create_response(([items[0].id, items[1].id], "first group")),
+            _create_response(([items[50].id, items[51].id], "second group")),
+        ]
+    )
+
+    proposals, tokens = task_organize.propose_inbox_creates(session, llm)
+    assert [p.title for p in proposals] == ["first group", "second group"]
+    assert tokens == 20  # two chunks, one call each
+    assert len(llm.calls) == 2
+
+
+def test_propose_inbox_creates_retries_transient_error(session: Session) -> None:
+    a = _nugget(session, "alpha thing", path="x/1.md", line=1)
+    b = _nugget(session, "beta thing", path="x/2.md", line=2)
+    llm = _FlakyLLM([_timeout(), _create_response(([a.id, b.id], "pair"))])
+
+    proposals, _ = task_organize.propose_inbox_creates(session, llm)
+    assert [p.title for p in proposals] == ["pair"]
+    assert len(llm.calls) == 2  # one timeout, then a successful retry
+
+
+def test_propose_inbox_creates_skips_failed_chunk(session: Session) -> None:
+    _nugget(session, "alpha", path="x/1.md", line=1)
+    _nugget(session, "beta", path="x/2.md", line=2)
+    llm = _FlakyLLM([_timeout()] * 4)
+
+    proposals, tokens = task_organize.propose_inbox_creates(session, llm)
+    assert proposals == [] and tokens == 0
+    assert len(llm.calls) == 4  # attempts exhausted → chunk skipped, not fatal
+
+
+def test_propose_inbox_creates_caps_scope(session: Session) -> None:
+    for i in range(201):
+        _nugget(session, f"item {i}", path=f"x/{i}.md", line=1)
+    llm = FakeLLM(responses=[json.dumps({"proposals": []})])
+
+    task_organize.propose_inbox_creates(session, llm)
+    total = sum(str(c["prompt"]).count("\n- #") for c in llm.calls)
+    assert total == task_organize._INBOX_MAX_ITEMS  # exactly the cap, not all 201
+
+
+def test_parse_json_error_keeps_detail(session: Session) -> None:
+    bad = json.dumps(
+        {"proposals": [{"kind": "create", "nugget_ids": ["oops"], "title": "x", "reason": "r"}]}
+    )
+    llm = _FlakyLLM([bad, bad, bad, bad])
+
+    with pytest.raises(ValueError, match="integer"):
+        task_organize.propose_organization(session, llm)
+
+
 def test_propose_organization_validates(session: Session) -> None:
     survivor = tasks.create_task(session, "survivor")
     loser = tasks.create_task(session, "loser")
