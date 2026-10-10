@@ -35,6 +35,34 @@
   --bc: #1f2937;
 }
 
+/* --- checkbox selected state ---
+   daisyUI's prebuilt full.css draws the checkbox checkmark with
+   ``oklch(var(--bc)/...)``; the hex theme tokens above make those
+   expressions invalid on oklch-capable browsers, so ``:checked`` renders as an
+   empty circle. Re-draw the checked/indeterminate states in brand colours so
+   selection is unmistakable everywhere (inbox bulk select, group attach,
+   task/people filters, organize proposals). */
+.checkbox:checked,
+.checkbox[aria-checked="true"] {
+  animation: none;
+  border-color: var(--p);
+  background-color: var(--p);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 11l3.5 3.5 7.5-9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 80% 80%;
+}
+.checkbox:indeterminate,
+.checkbox[aria-checked="mixed"] {
+  animation: none;
+  border-color: var(--p);
+  background-color: var(--p);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' stroke='white' stroke-width='3.5' stroke-linecap='round'%3E%3Cpath d='M5 10h10'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 60% 60%;
+}
+
 /* --- priority row shading (very light tints) --- */
 .row-priority-critical > td,
 .row-priority-critical > td:first-child {
