@@ -2,8 +2,13 @@
 
 Task/project management platform for the owner and their team. One FastAPI
 service owns all data; the CLI, htmx web GUI, Discord listener, and MCP server
-are thin HTTP clients of the same `/api`. See PLAN.md for full design and
-rationale.
+are thin HTTP clients of the same `/api`.
+
+**Read the docs first.** Human-facing and behavioral detail lives in [`docs/`](docs/)
+(`docs/index.md` is the hub): concepts, workflows, jobs, CLI, config,
+integrations, architecture, API, and roadmap. Don't re-derive behavior from
+code when a doc already describes it — and when you change behavior, update the
+docs (see [Documentation](#documentation) below).
 
 ## Environment
 
@@ -16,6 +21,7 @@ rationale.
   Docker it is installed at image build time)
 - Docker: `docker compose up --build` (postgres 17 + server; entrypoint runs
   `alembic upgrade head` first)
+- See [`docs/development.md`](docs/development.md) for the full workflow.
 
 ## Hard rules
 
@@ -49,114 +55,54 @@ rationale.
   env override `EWO_CONFIG_FILENAME`; click commands use `--config` with the
   shared validation callback. Add new settings to the model + `ewo.example.json`.
 
-## Conventions
+## Conventions (summary)
+
+Full behavioral detail is in [`docs/architecture.md`](docs/architecture.md) and
+the per-topic guides. Short pointers:
 
 - Service layer in `ewo/core/` takes a `Session` (and plain args), returns ORM
   objects or plain data — no FastAPI imports in core.
 - Jobs: register in `ewo/jobs/builtin.py` via the registry; every execution
-  (scheduled or on-demand) records a `JobRun` row (its return string goes in
-  `JobRun.result`). On-demand: `POST /api/jobs/{name}/run[?full=true]` /
-  `ewo jobs run <name> [--full]`; per-run params arrive via `JobContext.params`.
-  Long jobs: `wait=false` (API) / `--no-wait` (CLI) runs the job in a daemon
-  thread and returns 202 with the run id. Runs left `running` by a dead
-  process are failed at startup (`mark_interrupted_runs` in the lifespan).
-- Notes pipeline: `core/notes.py` (reader) → `core/note_extract.py` (LLM
-  extraction, `notes_scan` job) → `Nugget` inbox (`core/nuggets.py`) →
-  attach (`nuggets.attach_nugget`) links the nugget to a task — an existing
-  one or a new `Task(source=notes)` — with an `ExternalLink(system="notes",
-  external_key="<path>:<line>:<nugget_id>")`. Nuggets dedupe on
-  `fingerprint`; reviewed nuggets are never re-surfaced. Jira keys mentioned
-  in notes are captured on the nugget (`jira_keys`) and become task links on
-  attach. People are attributed via `Person.notes_dir` (folder wins) then
-  `name`/`aliases` (`core/people.resolve_person`). The `nuggets_match` job
-  (`core/nugget_match.py`, also run at the end of `notes_scan`) stores a
-  suggested task per new nugget; the inbox groups by it. `core/task_organize.py`
-  computes stateless merge/split/create/retitle proposals behind the
-  tasks-page "Organize (AI)" button — nothing is persisted until confirmed.
-  The same module powers topic grouping: `propose_topic_group(session, llm,
-  topic)` finds open tasks related to a free-form topic (validated to open
-  ids, capped at 20, needs ≥2) and `apply_group` re-parents the confirmed
-  set under exactly one parent — a new task (`source=manual`) or an existing
-  one — via `tasks.update_task`, with the parent choice validated up front
-  (self-parent and descendant cycles raise `ValueError` before any change).
-  GUI: "Group topic (AI)" form on the tasks page → `_topic_group.html` in
-  `#organize-result` (checkbox list + new/existing parent radio), apply via
-  `POST /gui/tasks/organize/group` → `_tasks_oob.html` (validation errors
-  render inline in the OOB `#organize-result` slot). Splitting one task from
-  free-form instructions is the same stateless pattern, but only in the edit
-  panel (never in the expanded task detail): the "Split (AI)" form lives in
-  `_task_edit.html` (only when `llm_enabled`, passed via `_edit_context`) →
-  `POST /gui/tasks/organize/split/propose` → `propose_split_parts` →
-  `_split_proposal.html` in `#task-{id}-split` (checkbox per part + hidden
-  `proposal` JSON/`task_id`/`mode`); `POST /gui/tasks/organize/split/apply`
-  re-validates the hidden proposal against the currently attached nuggets,
-  applies only the checked parts via `apply_split_parts`, and returns
-  `_split_applied.html` (fresh `#task-list`, errors inline in the OOB
-  `#organize-result` slot). These split routes are declared before
-  `/gui/tasks/{task_id}`.
-  Related grouping for a just-created task follows the same stateless pattern:
-  `create_task` (non-compact, llm_enabled) returns `_tasks_oob.html` with
-  `_related_banner.html` in the OOB `#related-banner` slot; "Find related"
-  posts `task_id` to `/gui/tasks/organize/related`, which calls
-  `propose_related` — first POST (no `answered` field) renders
-  `_related_questions.html` (answer inputs + hidden `question` fields),
-  resubmitting with `answered=1` pairs hidden `question`/`answer` lists into
-  the `qa` argument and renders `_topic_group.html` in `#organize-result`,
-  whose form applies via `POST /gui/tasks/organize/group` (one Q&A round max,
-  nothing persisted until confirmed). The related route is also declared
-  before `/gui/tasks/{task_id}`.
-- Tasks form a single-parent tree of arbitrary depth (`Task.parent_id`, cycle
-  checks in `core/tasks.py`); `completed_at` is auto-managed on status→done.
-  One external key (e.g. a Jira issue) may be linked from many tasks; links
-  are unique per task (`uq_external_links_key_task`).
-- Labels = tags. `Tag` has an optional `description`; service layer lives in
-  `core/tags.py` (`normalize_name` = strip+lower, CRUD, `descendant_ids`,
-  `add_tags_to_descendants`). Inheritance: `create_task` unions the parent's
-  tags into a new child (additive). In the GUI, adding a tag to a task that
-  has descendants returns `_task_row_oob.html` with a `_tag_sync_confirm.html`
-  banner in `#tag-sync-banner`; confirming posts to
-  `POST /gui/tasks/{id}/propagate-tags` → `add_tags_to_descendants`
-  (append-only, returns count of descendants changed). Tag removal is never
-  propagated. Never propagate via `update_task(..., tags=...)` — it replaces
-  the tag set wholesale. The `housekeeping` job (`core/housekeeping.py`)
-  sweeps the whole task tree roots-first and additively applies missing
-  parent labels to descendants (never removes); registered as `housekeeping`
-  in `jobs/builtin.py`. The `housekeeping` job (`core/housekeeping.py`)
-  sweeps the whole task tree roots-first and additively applies missing
-  parent labels to descendants (never removes); registered as `housekeeping`
-  in `jobs/builtin.py`.
-- Multi-tag filter: `list_tasks(tags=[...], tag_match="any"|"all")`; ANY is
-  the default (OR), ALL chains one `Task.tags.any(...)` per name. The legacy
-  single `tag` kwarg/query param is merged into the `tags` list. The tasks
-  page exposes this as a label checkbox dropdown plus ANY/ALL radios
-  ("Show tasks with: any selected label / all selected labels").
-- GUI: pages `/`, `/tasks`, `/inbox`, `/people`, `/jobs`, `/labels` extend
-  `_layout.html`; fragments are `_*.html` and are what htmx swaps in. A
-  mutation returns the fragment it belongs to (row, item, list).
-- Any element rendering free-form user text inside a flex/grid layout must
-  carry `min-w-0` on itself and its flex/grid-item ancestors (flex/grid items
-  default to `min-width: auto` and inflate to their content's min-content);
-  use `break-words` for prose and `break-all` for excerpts/tokens/URLs (note
-  `break-words` = `overflow-wrap: break-word` does NOT reduce min-content, so
-  it alone cannot stop a long unbroken string from widening the page).
-- Reports are generated as markdown and published to the dedicated GitHub
-  repo configured in `reports_repo`; path format
-  `<folder>/YYYY-MM/YYYY-MM-DD-HHMM-<type>.md` (HHMM — no colon, Windows-safe).
-- Git operations use subprocess `git` via the `GitRepo` wrapper in
-  `ewo/core/report_publisher.py` — no GitPython.
+  records a `JobRun` row. On-demand: `POST /api/jobs/{name}/run[?full=true]` /
+  `ewo jobs run <name> [--full]`. Long jobs: `wait=false` / `--no-wait` runs
+  in a daemon thread and returns 202 with the run id; dead-process runs are
+  failed at startup (`mark_interrupted_runs`).
+- Notes pipeline: `core/notes.py` (reader) → `core/note_extract.py` (LLM,
+  `notes_scan`) → `Nugget` inbox (`core/nuggets.py`) → attach links the nugget
+  to a task via an `ExternalLink(system="notes", …)`. See [`docs/inbox.md`](docs/inbox.md).
+- Task organization (AI) is **stateless**: `core/task_organize.py` proposes,
+  nothing persists until confirmed. See [`docs/organize.md`](docs/organize.md).
+- Tags/labels are additive through the tree; removal is never propagated; never
+  propagate via `update_task(..., tags=…)`. See [`docs/organize.md`](docs/organize.md).
+- GUI fragments (`_*.html`) are what htmx swaps in; a mutation returns the
+  fragment it belongs to. Free-form text in flex/grid needs `min-w-0` +
+  `break-words`/`break-all`. See [`docs/architecture.md`](docs/architecture.md).
+- Reports use subprocess `git` via `GitRepo` in `ewo/core/report_publisher.py`
+  — no GitPython.
 - Discord/other listeners share the command router in `ewo/listeners/base.py`;
-  platform code only adapts transport.
-- MCP tools are defined once in `ewo/mcp/tools.py` and exposed via both stdio
-  (for opencode) and HTTP transports.
+  MCP tools are defined once in `ewo/mcp/tools.py`.
 
-## Future work (tracked, not yet built)
+## Future work
 
-- Jira: `HttpJiraClient` speaks the Jira **Cloud** v3 API (`/rest/api/3/search/jql`,
-  `nextPageToken`, `accountId`). The configured instance is Jira **Server/DC**
-  9.x, which needs `/rest/api/2/search?startAt=`, Bearer PAT auth and
-  `assignee.name` — every scheduled `jira_sync` currently fails with 403.
-- Enable `read_only: true` + `tmpfs` in docker-compose (verify no overlay writes)
-- Slack read-only listener
-- Meeting-minutes archive integration
-- Optional overview document (the dated `overviews/*.md` snapshot) generated
-  from the inbox + tasks and published to the reports repo
+See [`docs/roadmap.md`](docs/roadmap.md).
+
+## Documentation
+
+Docs live in [`docs/`](docs/) as interlinked markdown, one focused file per
+topic, readable on GitHub. The hub is `docs/index.md`, organized by audience
+(basic users, advanced users, developers).
+
+When maintaining or writing docs:
+
+- Add/update the topic file that owns the subject; keep each file concise and
+  focused on one use case or concern.
+- Link between files for navigation; don't duplicate prose that already has a
+  home.
+- Keep the three audiences in mind: basic users (browse/manage), advanced users
+  (inference, jobs, integrations), developers (code, architecture, API).
+- Reflect behavior changes in the relevant doc in the same change set, and keep
+  `docs/index.md` and the top-level `README.md` links current when files are
+  added, renamed, or removed.
+- Prefer moving low-level/behavioral detail out of this file and into `docs/`;
+  keep `AGENTS.md` a human-friendly starting point plus the hard, code-level
+  rules.
