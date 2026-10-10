@@ -13,7 +13,7 @@ return string lands in `JobRun.result`.
 | `daily_report` | Generate the daily markdown, publish it to the reports repo, and (if Google is enabled) email it. |
 | `what_next` | Generate the what-next report and publish it. |
 | `notes_scan` | Extract outstanding nuggets from notes changed since the last successful scan (`full=true` rescans the whole window), then suggest candidate tasks for the new nuggets. Requires `llm.api_key`. |
-| `nuggets_match` | (Re)compute suggested tasks for unreviewed nuggets. Requires `llm.api_key`. |
+| `nuggets_match` | (Re)compute suggested tasks for unreviewed nuggets, using the smart model tier. Incremental: skips nuggets that already have a suggestion, and commits results per chunk so a mid-run failure keeps earlier matches. Requires `llm.api_key`. |
 | `inbox_suggest` | AI-propose new tasks that group clusters of unmatched inbox nuggets; the proposals are stored on the run's `payload` for the GUI to review. Requires `llm.api_key`. |
 | `housekeeping` | Data-integrity sweep: additive parent-label propagation through the task tree, plus pruning of expired job logs. |
 

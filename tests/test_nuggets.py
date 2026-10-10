@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 
+import httpx2
+import openai
 import pytest
 from sqlalchemy.orm import Session
 
 from ewo.core import nuggets, people, task_organize, tasks
-from ewo.core.llm import FakeLLM
+from ewo.core.llm import FakeLLM, LLMResult
 from ewo.core.nugget_match import suggest_matches
 from ewo.core.people import NotFoundError
 from ewo.db.models import (
@@ -149,6 +151,25 @@ def _match_response(*pairs: tuple[int, int | None]) -> str:
     return json.dumps({"matches": [{"item": item, "task": task} for item, task in pairs]})
 
 
+def _timeout() -> openai.APITimeoutError:
+    return openai.APITimeoutError(request=httpx2.Request("POST", "http://llm.test"))
+
+
+class _FlakyLLM:
+    """Fake LLM that replays a script of responses or exceptions per call."""
+
+    def __init__(self, script: list[object]) -> None:
+        self._script = list(script)
+        self.calls: list[dict[str, object]] = []
+
+    def complete(self, prompt: str, system: str | None = None, smart: bool = False) -> LLMResult:
+        self.calls.append({"prompt": prompt, "system": system, "smart": smart})
+        step = self._script.pop(0) if self._script else ""
+        if isinstance(step, Exception):
+            raise step
+        return LLMResult(text=str(step), tokens_used=10)
+
+
 def test_suggest_deterministic_duplicate(session: Session) -> None:
     """A repeated item inherits the task its twin was attached to — no LLM call."""
     task = tasks.create_task(session, "the topic")
@@ -174,7 +195,7 @@ def test_suggest_llm_pass_and_no_match(session: Session) -> None:
     assert summary.suggested == 1 and summary.no_match == 1
     assert nuggets.get_nugget(session, a.id).suggested_task_id == topic.id
     assert nuggets.get_nugget(session, b.id).suggested_task_id is None
-    assert llm.calls and llm.calls[0]["smart"] is False
+    assert llm.calls and llm.calls[0]["smart"] is True
 
 
 def test_suggest_ignores_hallucinated_ids_and_bad_json(session: Session) -> None:
@@ -201,6 +222,58 @@ def test_suggest_records_chunk_errors(session: Session) -> None:
     summary = suggest_matches(session, llm)
     assert summary.errors and "did not return valid matches" in summary.errors[0]
     assert "errors=1" in summary.as_text()
+
+
+def test_suggest_retries_transient_error(session: Session) -> None:
+    topic = tasks.create_task(session, "the topic")
+    a = _nugget(session, "work on the thing", path="a.md", line=1)
+    llm = _FlakyLLM([_timeout(), _match_response((a.id, topic.id))])
+
+    summary = suggest_matches(session, llm)
+    assert summary.suggested == 1 and summary.errors == []
+    assert len(llm.calls) == 2  # one timeout, then a successful retry
+    assert nuggets.get_nugget(session, a.id).suggested_task_id == topic.id
+
+
+def test_suggest_skips_chunk_on_persistent_transient_error(session: Session) -> None:
+    tasks.create_task(session, "a task")
+    a = _nugget(session, "unreachable", path="a.md", line=1)
+    llm = _FlakyLLM([_timeout()] * 4)
+
+    summary = suggest_matches(session, llm)
+    assert len(llm.calls) == 4  # attempts exhausted → chunk skipped, not fatal
+    assert summary.errors and "LLM request failed" in summary.errors[0]
+    assert nuggets.get_nugget(session, a.id).suggested_task_id is None
+
+
+def test_suggest_persists_deterministic_before_llm_failure(session: Session) -> None:
+    """A deterministic suggestion survives even when the LLM pass then fails."""
+    task = tasks.create_task(session, "the topic")
+    attached = _nugget(session, "fix the IX SLA report", path="a/one.md")
+    nuggets.attach_nugget(session, attached.id, task_id=task.id)
+    duplicate = _nugget(session, "Fix the IX SLA report!", path="b/two.md")
+    _nugget(session, "brand new work", path="c.md")
+    llm = _FlakyLLM([_timeout()] * 4)
+
+    summary = suggest_matches(session, llm)
+    assert nuggets.get_nugget(session, duplicate.id).suggested_task_id == task.id
+    assert summary.suggested == 1
+    assert summary.errors  # the unrelated nugget's LLM pass failed
+
+
+def test_suggest_skips_already_suggested(session: Session) -> None:
+    topic = tasks.create_task(session, "the topic")
+    a = _nugget(session, "already matched", path="a.md", line=1)
+    a.suggested_task_id = topic.id
+    session.commit()
+    b = _nugget(session, "still open", path="b.md", line=2)
+    llm = _FlakyLLM([_match_response((b.id, None))])
+
+    summary = suggest_matches(session, llm)
+    assert summary.reviewed == 1  # only 'b' is considered
+    assert len(llm.calls) == 1
+    assert a.suggested_task_id == topic.id  # untouched
+    assert nuggets.get_nugget(session, b.id).suggested_task_id is None
 
 
 def test_suggest_fence_stripping_and_id_filter(session: Session) -> None:
