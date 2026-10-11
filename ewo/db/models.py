@@ -357,3 +357,24 @@ class UIPreference(Base):
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class NuggetSuggestion(Base):
+    """One AI-proposed new task grouping unattached inbox nuggets.
+
+    The ``inbox_suggest`` job stores its proposals here so the user can work
+    through them over several actions (instead of consuming the whole batch in
+    one go). ``nugget_ids`` is the originally proposed cluster; the GUI renders
+    whatever of those are still ``NEW``/unattached, so changes made elsewhere
+    (attach/dismiss/done) are reflected without overwriting anything. A newer
+    ``inbox_suggest`` run replaces the whole table.
+    """
+
+    __tablename__ = "nugget_suggestions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(500))
+    reason: Mapped[str | None] = mapped_column(Text)
+    nugget_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -19,7 +19,16 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ewo.config import Config
-from ewo.core import colors, nuggets, one_on_ones, people, preferences, task_organize, tasks
+from ewo.core import (
+    colors,
+    nuggets,
+    one_on_ones,
+    people,
+    preferences,
+    task_organize,
+    task_suggestion,
+    tasks,
+)
 from ewo.core import tags as tags_core
 from ewo.core.dashboard import build_dashboard
 from ewo.core.llm import LLMClient
@@ -952,7 +961,7 @@ def _inbox_context(session: Session, status: str = "new", owner: str = "") -> di
         groups = [
             {"kind": "path", "path": path, "nuggets": group} for path, group in by_path.items()
         ]
-    return {
+    context: dict[str, object] = {
         "groups": groups,
         "count": len(items),
         "filters": {"status": status, "owner": owner},
@@ -960,6 +969,30 @@ def _inbox_context(session: Session, status: str = "new", owner: str = "") -> di
         "open_tasks": open_tasks,
         "item_statuses": list(NuggetStatus),
         "kinds": list(NuggetKind),
+    }
+    context.update(_suggestion_panel_context(session))
+    return context
+
+
+def _suggestion_panel_context(session: Session) -> dict[str, object]:
+    """The suggested-new-task panel: each stored suggestion resolved to its
+    still-NEW nuggets, plus whether the panel is collapsed."""
+    resolved = []
+    for suggestion in task_suggestion.list_suggestions(session):
+        remaining = task_suggestion.remaining_nuggets(session, suggestion)
+        if remaining:
+            resolved.append(
+                {
+                    "id": suggestion.id,
+                    "title": (suggestion.title or "")[:500],
+                    "reason": suggestion.reason or "",
+                    "nuggets": remaining,
+                }
+            )
+    collapsed = preferences.get_pref(session, "inbox.suggest.collapsed")
+    return {
+        "suggestions": resolved,
+        "suggest_collapsed": bool(collapsed and collapsed.get("value")),
     }
 
 
@@ -1031,7 +1064,7 @@ def inbox_attach_group(
             nuggets.attach_nugget(
                 session, item.id, task_id=task_id, jira_base_url=_jira_base_url(config)
             )
-    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+    return _render(request, "_inbox_oob.html", _inbox_context(session, status, owner))
 
 
 @router.post("/gui/inbox/suggest-creates", response_class=HTMLResponse)
@@ -1045,14 +1078,18 @@ def inbox_suggest_creates(
     """AI proposes new tasks that group clusters of unmapped notes.
 
     Runs as the ``inbox_suggest`` job so the proposal generation is streamed as
-    a live log; proposals are stored on the run's ``payload`` and rendered by
-    /gui/inbox/create-review once the run completes. Nothing is persisted until
-    the user picks notes and confirms."""
+    a live log; the job stores the proposals as ``NuggetSuggestion`` rows the
+    create panel renders until they are consumed or dismissed. Nothing is
+    attached until the user picks notes and confirms."""
     if not config.llm.api_key:
         return _render(
             request,
             "_inbox_create.html",
-            {"proposals": [], "nuggets_by_id": {}, "error": "No LLM API key configured."},
+            {
+                "suggestions": [],
+                "error": "No LLM API key configured.",
+                "suggest_collapsed": False,
+            },
         )
     try:
         run_id = registry.run_async("inbox_suggest", session_factory, config, llm)
@@ -1060,30 +1097,59 @@ def inbox_suggest_creates(
         return _render(request, "_job_log_error.html", {"error": str(exc)})
     with session_factory() as session:
         context = _log_view_context(session, run_id)
-    context["refresh_url"] = f"/gui/inbox/create-review?run_id={run_id}"
+    context["refresh_url"] = "/gui/inbox/create-panel"
     context["refresh_target"] = "#inbox-create-result"
     return _render(request, "_job_log_view.html", context)
 
 
-@router.get("/gui/inbox/create-review", response_class=HTMLResponse)
-def inbox_create_review(request: Request, run_id: int, session: SessionDep) -> HTMLResponse:
-    """Render the proposals stored by a completed inbox_suggest run."""
-    context: dict[str, object] = {"proposals": [], "nuggets_by_id": {}, "error": None}
-    run = session.get(JobRun, run_id)
-    if run is None:
-        context["error"] = f"job run {run_id} not found"
-    else:
-        payload = run.payload or {}
-        raw = payload.get("proposals", []) if isinstance(payload, dict) else []
-        raw_items = list(raw) if isinstance(raw, list) else []
-        proposals = [task_organize.Proposal.model_validate(p) for p in raw_items]
-        if run.status == JobRunStatus.FAILED and not proposals:
-            context["error"] = "suggestion failed — see the run log"
-        else:
-            new_nuggets = nuggets.list_nuggets(session, status=NuggetStatus.NEW)
-            context["proposals"] = proposals
-            context["nuggets_by_id"] = {n.id: n for n in new_nuggets}
-    return _render(request, "_inbox_create.html", context)
+def _create_panel_context(session: Session, error: str | None = None) -> dict[str, object]:
+    context = _suggestion_panel_context(session)
+    context["error"] = error
+    return context
+
+
+@router.get("/gui/inbox/create-panel", response_class=HTMLResponse)
+def inbox_create_panel(request: Request, session: SessionDep) -> HTMLResponse:
+    """Render the current suggested-new-task proposals from the stored set."""
+    return _render(request, "_inbox_create.html", _create_panel_context(session))
+
+
+@router.post("/gui/inbox/suggest/clear", response_class=HTMLResponse)
+def inbox_suggest_clear(request: Request, session: SessionDep) -> HTMLResponse:
+    """Drop all stored new-task suggestions."""
+    task_suggestion.clear_suggestions(session)
+    return _render(request, "_inbox_create.html", _create_panel_context(session))
+
+
+@router.post("/gui/inbox/suggest/{suggestion_id}/delete", response_class=HTMLResponse)
+def inbox_suggest_delete(request: Request, suggestion_id: int, session: SessionDep) -> HTMLResponse:
+    """Remove a single stored suggestion without touching its nuggets."""
+    task_suggestion.delete_suggestion(session, suggestion_id)
+    return _render(request, "_inbox_create.html", _create_panel_context(session))
+
+
+@router.post("/gui/inbox/suggest/collapse", response_class=HTMLResponse)
+def inbox_suggest_collapse(
+    request: Request, session: SessionDep, collapsed: Annotated[str, Form()] = "0"
+) -> HTMLResponse:
+    preferences.set_pref(session, "inbox.suggest.collapsed", {"value": collapsed == "1"})
+    return _render(request, "_inbox_create.html", _create_panel_context(session))
+
+
+@router.post("/gui/inbox/suggest/bulk", response_class=HTMLResponse)
+def inbox_suggest_bulk(
+    request: Request,
+    session: SessionDep,
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+    action: Annotated[str, Form()] = "dismiss",
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+) -> HTMLResponse:
+    """Bulk dismiss/do the selected nuggets from within a suggestion card."""
+    target = NuggetStatus.DISMISSED if action == "dismiss" else NuggetStatus.ALREADY_DONE
+    for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
+        nuggets.set_nugget_status(session, nugget_id, target)
+    return _render(request, "_inbox_oob.html", _inbox_context(session, status, owner))
 
 
 @router.post("/gui/inbox/create-group", response_class=HTMLResponse)
@@ -1097,7 +1163,7 @@ def inbox_create_group(
     nugget_ids: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
     """Create a task from the user-confirmed cluster of notes and refresh the inbox."""
-    ids = [n for n in (nugget_ids or [])]
+    ids = _bulk_nugget_ids(nugget_ids)
     error: str | None = None
     if not title.strip():
         error = "New task needs a title."
@@ -1117,6 +1183,17 @@ def _bulk_nugget_ids(nugget_ids: list[int] | None) -> list[int]:
     return list(dict.fromkeys(nugget_ids or []))
 
 
+def _reviewable_nugget_ids(session: Session, ids: list[int]) -> list[int]:
+    """Keep only ids that are still NEW and unattached (never re-process a
+    nugget the user has since attached/dismissed/marked done)."""
+    if not ids:
+        return []
+    new_ids = {
+        n.id for n in nuggets.list_nuggets(session, status=NuggetStatus.NEW) if n.task_id is None
+    }
+    return [nid for nid in ids if nid in new_ids]
+
+
 @router.post("/gui/inbox/bulk/attach", response_class=HTMLResponse)
 def inbox_bulk_attach(
     request: Request,
@@ -1129,7 +1206,7 @@ def inbox_bulk_attach(
     owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     """Attach the selected nuggets to an existing task, or create one new task from them."""
-    ids = _bulk_nugget_ids(nugget_ids)
+    ids = _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids))
     error: str | None = None
     if not ids:
         error = "Select at least one note to attach."
@@ -1158,9 +1235,9 @@ def inbox_bulk_dismiss(
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    for nugget_id in _bulk_nugget_ids(nugget_ids):
+    for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
         nuggets.set_nugget_status(session, nugget_id, NuggetStatus.DISMISSED)
-    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+    return _render(request, "_inbox_oob.html", _inbox_context(session, status, owner))
 
 
 @router.post("/gui/inbox/bulk/done", response_class=HTMLResponse)
@@ -1171,9 +1248,9 @@ def inbox_bulk_done(
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    for nugget_id in _bulk_nugget_ids(nugget_ids):
+    for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
         nuggets.set_nugget_status(session, nugget_id, NuggetStatus.ALREADY_DONE)
-    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+    return _render(request, "_inbox_oob.html", _inbox_context(session, status, owner))
 
 
 @router.post("/gui/nuggets/{nugget_id}/attach", response_class=HTMLResponse)

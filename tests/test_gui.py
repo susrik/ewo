@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ewo.config import NotesConfig
 from ewo.core import nuggets
-from ewo.db.models import NuggetKind
+from ewo.db.models import NuggetKind, NuggetSuggestion
 
 
 def _item(session: Session, summary: str = "chase Matti", path: str = "eurohpc/x.md") -> int:
@@ -1198,9 +1198,9 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
     )
     posted = client.post("/gui/inbox/suggest-creates")
     assert "inbox_suggest" in posted.text  # live job-log view streamed in
-    run = _wait_for_run(client, "inbox_suggest")
-    review = client.get(f"/gui/inbox/create-review?run_id={run['id']}")
-    assert "alpha beta" in review.text and "alpha thing" in review.text
+    _wait_for_run(client, "inbox_suggest")
+    panel = client.get("/gui/inbox/create-panel")
+    assert "alpha beta" in panel.text and "alpha thing" in panel.text
 
     # untick one nugget: only the selected one becomes the new task
     created = client.post(
@@ -1221,10 +1221,9 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
     # garbage LLM output is skipped per chunk; the run still succeeds with no proposals
     client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
     client.post("/gui/inbox/suggest-creates")
-    run = _wait_for_run(client, "inbox_suggest")
-    assert run["status"] == "success"
-    review = client.get(f"/gui/inbox/create-review?run_id={run['id']}")
-    assert "No new-task suggestions right now." in review.text
+    _wait_for_run(client, "inbox_suggest")
+    panel = client.get("/gui/inbox/create-panel")
+    assert "No new-task suggestions right now." in panel.text
 
 
 def test_inbox_suggest_button(client: TestClient, session: Session) -> None:
@@ -1341,6 +1340,107 @@ def test_inbox_bulk_attach_task_search(client: TestClient, session: Session) -> 
     assert results.status_code == 200
     assert "/gui/inbox/bulk/attach" in results.text
     assert ".bulk-select:checked" in results.text
+
+
+def _suggestion(session: Session, title: str, *nugget_ids: int) -> NuggetSuggestion:
+    row = NuggetSuggestion(title=title, reason="grouped", nugget_ids=list(nugget_ids))
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_inbox_bulk_skips_processed_nuggets(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+
+    # `a` is already dismissed; only `b` should be affected by the bulk dismiss
+    client.post(f"/gui/nuggets/{a}/dismiss")
+    response = client.post("/gui/inbox/bulk/dismiss", data={"nugget_ids": [a, b]})
+    assert response.status_code == 200
+    assert client.get("/api/nuggets", params={"status": "new"}).json() == []
+    dismissed = client.get("/api/nuggets", params={"status": "dismissed"}).json()
+    assert {n["id"] for n in dismissed} == {a, b}  # a stays dismissed, b newly dismissed
+
+    # bulk done must not resurrect/re-mark an already-dismissed nugget either
+    c = _item(session, "gamma thing", "ai/c.md")
+    client.post("/gui/inbox/bulk/done", data={"nugget_ids": [a, c]})
+    done = client.get("/api/nuggets", params={"status": "already_done"}).json()
+    assert [n["id"] for n in done] == [c]
+    still_dismissed = client.get("/api/nuggets", params={"status": "dismissed"}).json()
+    assert {n["id"] for n in still_dismissed} == {a, b}
+
+
+def test_inbox_suggest_panel_clear_and_delete(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    s1 = _suggestion(session, "pair one", a, b)
+    _suggestion(session, "pair two", a, b)
+
+    panel = client.get("/gui/inbox/create-panel")
+    assert "pair one" in panel.text and "pair two" in panel.text
+
+    # delete a single suggestion; the other remains
+    client.post(f"/gui/inbox/suggest/{s1.id}/delete")
+    panel = client.get("/gui/inbox/create-panel")
+    assert "pair one" not in panel.text and "pair two" in panel.text
+
+    # clear drops everything
+    client.post("/gui/inbox/suggest/clear")
+    panel = client.get("/gui/inbox/create-panel")
+    assert "No new-task suggestions right now." in panel.text
+
+
+def test_inbox_suggest_bulk_dismiss_keeps_remaining(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    _suggestion(session, "the pair", a, b)
+
+    # dismiss only one of the two suggested nuggets
+    response = client.post("/gui/inbox/suggest/bulk", data={"action": "dismiss", "nugget_ids": [a]})
+    assert response.status_code == 200
+    assert client.get("/api/nuggets", params={"status": "dismissed"}).json()[0]["id"] == a
+
+    # the card keeps its remaining nugget (rather than disappearing)
+    panel = client.get("/gui/inbox/create-panel")
+    assert "the pair" in panel.text and "beta thing" in panel.text
+
+    # dismissing the last one retires the card entirely
+    client.post("/gui/inbox/suggest/bulk", data={"action": "dismiss", "nugget_ids": [b]})
+    panel = client.get("/gui/inbox/create-panel")
+    assert "No new-task suggestions right now." in panel.text
+
+
+def test_inbox_suggest_collapse_toggle(client: TestClient, session: Session) -> None:
+    a = _item(session)
+    _suggestion(session, "the pair", a)
+
+    panel = client.get("/gui/inbox/create-panel")
+    assert 'id="inbox-create-collapse"' in panel.text
+    assert "open" in panel.text  # defaults to expanded
+
+    client.post("/gui/inbox/suggest/collapse", data={"collapsed": "1"})
+    panel = client.get("/gui/inbox/create-panel")
+    assert "open" not in panel.text
+
+    client.post("/gui/inbox/suggest/collapse", data={"collapsed": "0"})
+    panel = client.get("/gui/inbox/create-panel")
+    assert "open" in panel.text
+
+
+def test_inbox_suggest_revalidates_against_attached(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    _suggestion(session, "the pair", a, b)
+
+    panel = client.get("/gui/inbox/create-panel")
+    assert "alpha thing" in panel.text and "beta thing" in panel.text
+
+    # `a` is attached elsewhere (e.g. from the main list); the panel reflects
+    # this by dropping it without touching `b`.
+    task = client.post("/api/tasks", json={"title": "the topic"}).json()
+    client.post(f"/gui/nuggets/{a}/attach", data={"task_id": str(task["id"])})
+    panel = client.get("/gui/inbox/create-panel")
+    assert "alpha thing" not in panel.text and "beta thing" in panel.text
 
 
 def test_inbox_scan_button_when_disabled(client: TestClient) -> None:

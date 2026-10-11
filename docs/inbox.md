@@ -48,6 +48,12 @@ filtering; hidden nuggets are never affected. The per-task *Attach selected*
 shortcut (when a suggested task groups several nuggets) remains available
 alongside the general selection.
 
+After any bulk operation the filter string is kept, the list stays filtered to
+it, and the "showing *M* of *N*" hint reflects the nuggets still matching.
+Bulk operations only ever touch nuggets that are still **new** (unattached) —
+a nugget you have since attached, dismissed, or marked done is never
+re-processed, and the selection count omits it.
+
 ## Suggest new tasks
 
 "Suggest new tasks" (Inbox) asks the `inbox_suggest` [job](jobs.md) to propose
@@ -56,6 +62,19 @@ the LLM runs, then shows the proposals for review — nothing is created until
 you tick the nuggets and confirm. See [Jobs](jobs.md#live-logs) for the
 streaming, and [Organize](organize.md) for the underlying stateless proposal
 logic.
+
+The proposals are **kept** once generated, so you can work through several
+groups without re-running the LLM:
+
+- Each proposal can be turned into a task at a time (*Create task*), or its
+  matched nuggets dismissed / marked done in bulk (*Already done*, *Dismiss*).
+- The panel can be **collapsed** to get it out of the way (the state is
+  remembered), and each proposal — or the whole panel — can be **dismissed**.
+- Running "Suggest new tasks" again replaces the previous set.
+- The panel always reflects the current inbox: nuggets you attach, dismiss, or
+  mark done elsewhere (including from the main list) drop out of a proposal and
+  are never overwritten or undone. A proposal disappears once none of its
+  nuggets remain.
 
 ## CLI
 

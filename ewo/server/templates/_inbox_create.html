@@ -1,27 +1,49 @@
 {% if error %}
 <div class="alert alert-warning py-2 text-sm mt-2"><span>{{ error }}</span></div>
-{% elif not proposals %}
+{% elif not suggestions %}
 <p class="opacity-60 text-sm mt-2">No new-task suggestions right now.</p>
 {% else %}
-<div class="grid gap-2 mt-2">
-  {% for p in proposals %}
-  <form hx-post="/gui/inbox/create-group" hx-target="#inbox-list" class="border rounded p-3 grid gap-2">
-    <div class="flex items-center gap-2">
-      <span class="badge badge-success badge-sm">new task</span>
-      <input class="input input-bordered input-sm flex-1" name="title" value="{{ p.title }}" required>
-      <button class="btn btn-xs btn-primary" type="submit">Create from selected</button>
+<details id="inbox-create-collapse" class="collapse collapse-arrow border rounded-box mt-2 bg-base-100" {% if not suggest_collapsed %}open{% endif %}>
+  <summary class="collapse-title text-sm font-semibold flex items-center gap-2 cursor-pointer">
+    Suggested new tasks
+    <span class="badge badge-sm badge-success">{{ suggestions | length }}</span>
+  </summary>
+  <div class="collapse-content grid gap-2">
+    <div class="flex justify-end">
+      <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/suggest/clear" hx-target="#inbox-create-result">Dismiss suggestions</button>
     </div>
-    {% if p.reason %}<div class="text-xs opacity-70">— {{ p.reason }}</div>{% endif %}
-    <div class="grid gap-1">
-      {% for nugget_id in p.nugget_ids %}
-      {% set nugget = nuggets_by_id[nugget_id] %}
-      <label class="flex items-start gap-2 cursor-pointer min-w-0">
-        <input type="checkbox" class="checkbox checkbox-xs mt-0.5" name="nugget_ids" value="{{ nugget.id }}" checked>
-        <span class="text-sm min-w-0 break-words"><span class="badge badge-xs {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span> {{ nugget.summary }}</span>
-      </label>
-      {% endfor %}
+    {% for s in suggestions %}
+    <div class="border rounded p-3 grid gap-2" id="suggest-{{ s.id }}">
+      <div class="flex items-center gap-2">
+        <span class="badge badge-success badge-sm">new task</span>
+        <span class="text-sm font-semibold flex-1 min-w-0 break-words">{{ s.title }}</span>
+        <button class="btn btn-xs btn-ghost" type="button" title="Discard this suggestion"
+                hx-post="/gui/inbox/suggest/{{ s.id }}/delete" hx-target="#inbox-create-result">✕ Discard</button>
+      </div>
+      {% if s.reason %}<div class="text-xs opacity-70">— {{ s.reason }}</div>{% endif %}
+      <div class="grid gap-1">
+        {% for nugget in s.nuggets %}
+        <label class="flex items-start gap-2 cursor-pointer min-w-0">
+          <input type="checkbox" class="checkbox checkbox-xs mt-0.5 suggest-select" name="nugget_ids" value="{{ nugget.id }}" checked>
+          <span class="text-sm min-w-0 break-words"><span class="badge badge-xs {% if nugget.kind.value == 'deadline' %}badge-error{% elif nugget.kind.value == 'question' %}badge-info{% elif nugget.kind.value == 'risk' %}badge-warning{% else %}badge-ghost{% endif %}">{{ nugget.kind.value }}</span> {{ nugget.summary }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="flex flex-wrap items-center gap-2 mt-1">
+        <form hx-post="/gui/inbox/create-group" hx-target="#inbox-list"
+              hx-include="#suggest-{{ s.id }} .suggest-select" class="flex flex-1 items-center gap-1 min-w-0">
+          <input class="input input-bordered input-sm flex-1 min-w-0" name="title" value="{{ s.title }}" required>
+          <button class="btn btn-xs btn-primary" type="submit">Create task</button>
+        </form>
+        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/suggest/bulk"
+                hx-vals='{"action": "done"}' hx-include="#suggest-{{ s.id }} .suggest-select"
+                hx-target="#inbox-list">Already done</button>
+        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/suggest/bulk"
+                hx-vals='{"action": "dismiss"}' hx-include="#suggest-{{ s.id }} .suggest-select"
+                hx-target="#inbox-list">Dismiss</button>
+      </div>
     </div>
-  </form>
-  {% endfor %}
-</div>
+    {% endfor %}
+  </div>
+</details>
 {% endif %}

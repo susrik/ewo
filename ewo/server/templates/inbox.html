@@ -96,7 +96,9 @@
         selected task (or a new one); <b>Dismiss</b> if it isn't actionable; <b>Already done</b> if the note
         is stale — the note itself is never modified.
       </p>
-      <div id="inbox-create-result"></div>
+      <div id="inbox-create-result">
+        {% include "_inbox_create.html" %}
+      </div>
       <div id="inbox-list">
         {% include "_inbox.html" %}
       </div>
@@ -174,10 +176,28 @@
 
     document.body.addEventListener("htmx:afterSwap", function (e) {
       if (!list) return;
-      if (e.detail.target === list || (e.detail.target && e.detail.target.contains && e.detail.target.contains(list))) {
-        applyFilter();
-      }
+      var target = e.detail.target;
+      var inInbox =
+        target === list ||
+        (target && target.id && target.id.indexOf("nugget-") === 0) ||
+        (target && target.contains && target.contains(list)) ||
+        (target && list.contains(target));
+      if (inInbox) applyFilter();
     });
+
+    // Persist the suggest-panel collapse state (the panel is re-rendered on
+    // swap, so delegate on the document and use capture since `toggle` does
+    // not bubble).
+    document.addEventListener("toggle", function (e) {
+      var el = e.target;
+      if (el && el.id === "inbox-create-collapse") {
+        fetch("/gui/inbox/suggest/collapse", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: "collapsed=" + (el.open ? "0" : "1"),
+        });
+      }
+    }, true);
 
     applyFilter();
   })();

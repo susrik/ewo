@@ -15,7 +15,14 @@ import ewo.jobs.builtin  # noqa: F401 - registers builtins
 from ewo.config import Config
 from ewo.core import nuggets, tasks
 from ewo.core.llm import FakeLLM
-from ewo.db.models import JobLogEntry, JobRun, JobRunStatus, NuggetKind, Report
+from ewo.db.models import (
+    JobLogEntry,
+    JobRun,
+    JobRunStatus,
+    NuggetKind,
+    NuggetSuggestion,
+    Report,
+)
 from ewo.jobs.registry import (
     JobContext,
     JobRegistry,
@@ -321,30 +328,45 @@ def test_job_log_records_start_finish_and_llm(
     assert "job 'nuggets_match' started" in entries[0].message
 
 
-def test_inbox_suggest_job_stores_payload(
+def test_inbox_suggest_job_stores_suggestions(
     session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM, session: Session
 ) -> None:
     a, _ = nuggets.upsert_nugget(session, "ai/a.md", 1, "alpha", NuggetKind.ACTION)
     b, _ = nuggets.upsert_nugget(session, "ai/b.md", 2, "beta", NuggetKind.ACTION)
     session.commit()
     config.llm.api_key = "sk"
-    fake_llm.responses = [
-        json.dumps(
-            {
-                "proposals": [
-                    {"kind": "create", "nugget_ids": [a.id, b.id], "title": "pair", "reason": "x"}
-                ]
-            }
-        )
-    ]
-    run = registry.run("inbox_suggest", session_factory, config, fake_llm)
-    assert run.status == JobRunStatus.SUCCESS
-    assert run.result == "proposals=1 tokens=10"
-    assert run.payload == {
-        "proposals": [
-            {"kind": "create", "nugget_ids": [a.id, b.id], "title": "pair", "reason": "x"}
+
+    def _run(expected_title: str) -> JobRun:
+        fake_llm.responses = [
+            json.dumps(
+                {
+                    "proposals": [
+                        {
+                            "kind": "create",
+                            "nugget_ids": [a.id, b.id],
+                            "title": expected_title,
+                            "reason": "x",
+                        }
+                    ]
+                }
+            )
         ]
-    }
+        run = registry.run("inbox_suggest", session_factory, config, fake_llm)
+        assert run.status == JobRunStatus.SUCCESS
+        assert run.result == "proposals=1 tokens=10"
+        return run
+
+    run = _run("pair")
+    with session_factory() as session:
+        rows = list(session.scalars(select(NuggetSuggestion)))
+        assert [r.title for r in rows] == ["pair"]
+        assert [r.nugget_ids for r in rows] == [[a.id, b.id]]
+
+    # a new run replaces the previous suggestions rather than appending
+    _run("second pairing")
+    with session_factory() as session:
+        rows = list(session.scalars(select(NuggetSuggestion)))
+        assert [r.title for r in rows] == ["second pairing"]
 
     # the LLM call is logged with tier/model/prompt sizes and the reply's tokens
     entries = _log_entries(session_factory, run.id)

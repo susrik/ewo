@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from ewo.core import reports, task_organize
+from ewo.core import reports, task_organize, task_suggestion
 from ewo.core.housekeeping import prune_job_logs, run_housekeeping
 from ewo.core.llm import LLMClient
 from ewo.core.note_extract import last_successful_scan, scan_notes
@@ -109,15 +109,15 @@ def nuggets_match(context: JobContext) -> str:
 
 @registry.register("inbox_suggest")
 def inbox_suggest(context: JobContext) -> str:
-    """AI-propose new tasks grouping unmatched inbox nuggets; store the
-    serialized proposals on the run's ``payload`` for the GUI to render."""
+    """AI-propose new tasks grouping unmatched inbox nuggets; store them as
+    ``NuggetSuggestion`` rows the GUI renders until dismissed or replaced."""
     if not context.config.llm.api_key:
         raise RuntimeError("inbox_suggest needs llm.api_key")
     proposals, tokens = task_organize.propose_inbox_creates(
         context.session, context.llm, log=context.log()
     )
     context.add_tokens(tokens)
-    context.job_run.payload = {"proposals": [p.model_dump(exclude_none=True) for p in proposals]}
+    task_suggestion.replace_suggestions(context.session, proposals)
     return f"proposals={len(proposals)} tokens={tokens}"
 
 
