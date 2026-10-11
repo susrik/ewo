@@ -57,12 +57,23 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="session")
 def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[LiveServer]:
-    """A real uvicorn server over a file-backed SQLite, shared by all browser tests.
+    """A real uvicorn server over a throwaway SQLite file, shared by all browser tests.
 
-    The SQLite file (with ``NullPool``) lets the server's request/worker threads
-    and the tests' own seeding sessions share one store safely. Config mirrors
-    ``tests/conftest.py`` (notes disabled, FakeLLM), plus an LLM API key so the
-    AI-affordances render without needing real network access.
+    The database is a file under pytest's temp dir (``tmp_path_factory``), created
+    fresh here and deleted when the run ends. It never touches any real/production
+    database; ``_reset_db`` drops and recreates the schema before every test so
+    seeding can't leak between tests.
+
+    A file (rather than ``sqlite://:memory:`` with a single ``StaticPool``
+    connection) is deliberate: uvicorn runs in this process's thread while
+    FastAPI's sync endpoints run in a threadpool and jobs run in daemon threads,
+    all touching the DB concurrently with the tests' own seeding sessions. A
+    single shared in-memory connection is not thread-safe. ``NullPool`` gives
+    every session its own connection over the one file, with a busy timeout for
+    the rare write clash — the same scheme ``tests/conftest.py`` uses.
+
+    Config mirrors ``tests/conftest.py`` (notes disabled, FakeLLM), plus an LLM
+    API key so the AI-affordances render without needing real network access.
     """
     tmp = tmp_path_factory.mktemp("browser-server")
     db_path = tmp / "browser.db"

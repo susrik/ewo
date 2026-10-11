@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from playwright.sync_api import Page
 
 from ewo.core import nuggets
-from ewo.db.models import NuggetKind
+from ewo.db.models import NuggetKind, NuggetSuggestion
 
 pytestmark = pytest.mark.browser
 
@@ -41,6 +41,19 @@ def _seed_nugget(live_server: LiveServer, summary: str, path: str = "eurohpc/x.m
         )
         session.commit()
         return item.id
+
+
+def _set_suggested_task(live_server: LiveServer, nugget_id: int, task_id: int) -> None:
+    """Point a nugget at the candidate task that ``nuggets_match`` would propose."""
+    with live_server.session_factory() as session:
+        nuggets.update_nugget(session, nugget_id, suggested_task_id=task_id)
+
+
+def _seed_suggestion(live_server: LiveServer, title: str, *nugget_ids: int) -> None:
+    """Store one ``NuggetSuggestion`` grouping ``nugget_ids`` (as ``inbox_suggest`` would)."""
+    with live_server.session_factory() as session:
+        session.add(NuggetSuggestion(title=title, nugget_ids=list(nugget_ids)))
+        session.commit()
 
 
 def _api_tasks(live_server: LiveServer, **params: object) -> list[dict]:
@@ -193,3 +206,125 @@ def test_jobs_run_streams_log(page: Page, live_server: LiveServer) -> None:
     # "No log entries"), proving the EventSource connected and streamed the log
     expect(view).to_contain_text("started", timeout=15_000)
     expect(view).to_contain_text("done", timeout=15_000)
+
+
+def test_inbox_review_select_all_toggle(page: Page, live_server: LiveServer) -> None:
+    _seed_nugget(live_server, "one thing")
+    _seed_nugget(live_server, "two thing", "ai/y.md")
+    _seed_nugget(live_server, "three thing", "ai/z.md")
+
+    page.goto(f"{live_server.base_url}/inbox")
+    count = page.locator("#inbox-selected-count")
+    expect(count).to_have_text("0 selected")
+
+    # select all visible nuggets
+    page.locator(".select-all").check()
+    expect(count).to_have_text("3 selected")
+
+    # uncheck all returns to zero
+    page.locator(".select-all").uncheck()
+    expect(count).to_have_text("0 selected")
+
+    # selecting a single nugget counts just that one
+    page.locator(".nugget-select").first.check()
+    expect(count).to_have_text("1 selected")
+
+
+def test_inbox_suggested_tasks_group_toggle(page: Page, live_server: LiveServer) -> None:
+    task = httpx.post(f"{live_server.base_url}/api/tasks", json={"title": "the topic"}).json()
+    a = _seed_nugget(live_server, "alpha thing")
+    b = _seed_nugget(live_server, "beta thing", "ai/y.md")
+    _set_suggested_task(live_server, a, task["id"])
+    _set_suggested_task(live_server, b, task["id"])
+
+    page.goto(f"{live_server.base_url}/inbox?mode=suggested_tasks")
+    group = page.locator("[data-group]").first
+    gcount = group.locator("[data-group-count]")
+    expect(gcount).to_have_text("0 of 2 selected")
+
+    # group toggle selects every nugget in the panel and updates the hint
+    group.locator(".group-toggle").check()
+    expect(gcount).to_have_text("2 of 2 selected")
+    expect(page.locator("#inbox-selected-count")).to_have_text("2 selected")
+
+    group.locator(".group-toggle").uncheck()
+    expect(gcount).to_have_text("0 of 2 selected")
+
+    # selecting a single nugget counts just that one
+    group.locator(".nugget-select").first.check()
+    expect(gcount).to_have_text("1 of 2 selected")
+
+
+def test_inbox_suggested_new_tasks_group_toggle(page: Page, live_server: LiveServer) -> None:
+    a = _seed_nugget(live_server, "alpha thing")
+    b = _seed_nugget(live_server, "beta thing", "ai/y.md")
+    _seed_suggestion(live_server, "the pair", a, b)
+
+    page.goto(f"{live_server.base_url}/inbox?mode=suggested_new_tasks")
+    group = page.locator("[data-group]").first
+    gcount = group.locator("[data-group-count]")
+    expect(gcount).to_have_text("0 of 2 selected")
+
+    group.locator(".group-toggle").check()
+    expect(gcount).to_have_text("2 of 2 selected")
+    expect(page.locator("#inbox-selected-count")).to_have_text("2 selected")
+
+    group.locator(".group-toggle").uncheck()
+    expect(gcount).to_have_text("0 of 2 selected")
+
+
+def test_inbox_suggested_tasks_group_isolation(page: Page, live_server: LiveServer) -> None:
+    alpha = httpx.post(f"{live_server.base_url}/api/tasks", json={"title": "alpha task"}).json()
+    beta = httpx.post(f"{live_server.base_url}/api/tasks", json={"title": "beta task"}).json()
+    a1 = _seed_nugget(live_server, "alpha one")
+    a2 = _seed_nugget(live_server, "alpha two", "ai/y.md")
+    b1 = _seed_nugget(live_server, "beta one", "ai/z.md")
+    _set_suggested_task(live_server, a1, alpha["id"])
+    _set_suggested_task(live_server, a2, alpha["id"])
+    _set_suggested_task(live_server, b1, beta["id"])
+
+    page.goto(f"{live_server.base_url}/inbox?mode=suggested_tasks")
+    agroup = page.locator(f"#task-{alpha['id']}")
+    bgroup = page.locator(f"#task-{beta['id']}")
+    agcount = agroup.locator("[data-group-count]")
+    bgcount = bgroup.locator("[data-group-count]")
+
+    expect(agcount).to_have_text("0 of 2 selected")
+    expect(bgcount).to_have_text("0 of 1 selected")
+
+    # toggling one group must not touch the other's count/selection
+    agroup.locator(".group-toggle").check()
+    expect(agcount).to_have_text("2 of 2 selected")
+    expect(bgcount).to_have_text("0 of 1 selected")
+    expect(page.locator("#inbox-selected-count")).to_have_text("2 selected")
+
+    bgroup.locator(".group-toggle").check()
+    expect(agcount).to_have_text("2 of 2 selected")
+    expect(bgcount).to_have_text("1 of 1 selected")
+    expect(page.locator("#inbox-selected-count")).to_have_text("3 selected")
+
+    # unchecking one group leaves the other selected
+    agroup.locator(".group-toggle").uncheck()
+    expect(agcount).to_have_text("0 of 2 selected")
+    expect(bgcount).to_have_text("1 of 1 selected")
+    expect(page.locator("#inbox-selected-count")).to_have_text("1 selected")
+
+
+def test_inbox_search_filter_count(page: Page, live_server: LiveServer) -> None:
+    _seed_nugget(live_server, "alpha thing")
+    _seed_nugget(live_server, "beta thing", "ai/y.md")
+    _seed_nugget(live_server, "gamma thing", "ai/z.md")
+
+    page.goto(f"{live_server.base_url}/inbox")
+    filtered = page.locator("#inbox-filtered-count")
+    # empty query shows no hint
+    expect(filtered).to_be_empty()
+
+    page.locator("#inbox-search").fill("alpha")
+    expect(filtered).to_have_text("showing 1 of 3")
+
+    page.locator("#inbox-search").fill("thing")
+    expect(filtered).to_have_text("showing 3 of 3")
+
+    page.locator("#inbox-search").fill("")
+    expect(filtered).to_be_empty()
