@@ -48,6 +48,21 @@ filtering; hidden nuggets are never affected. The per-task *Attach selected*
 shortcut (when a suggested task groups several nuggets) remains available
 alongside the general selection.
 
+When a suggested task groups several nuggets, two checkboxes sit side by side
+on each row; they're colour-coded (with a legend above the bulk toolbar) so
+they aren't confused:
+
+- the **blue** checkbox — *Include in the group attach* — controls which
+  nuggets the per-task *Attach selected to #N* shortcut attaches;
+- the **purple** checkbox — *Select for bulk actions* — is the general
+  selection, feeding the purple bulk toolbar (*Select all*, *Attach to task…*,
+  *＋ New task*, *Already done*, *Dismiss*).
+
+Both colours come from the inbox selection tokens in
+`ewo/server/static/theme.css` — `--select-attach` (blue) and `--select-bulk`
+(purple). Change those two variables to re-theme either workflow; the purple
+bulk-toolbar tint is derived from `--select-bulk`, so it follows automatically.
+
 After any bulk operation the filter string is kept, the list stays filtered to
 it, and the "showing *M* of *N*" hint reflects the nuggets still matching.
 Bulk operations only ever touch nuggets that are still **new** (unattached) —

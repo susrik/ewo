@@ -58,14 +58,14 @@
         <span id="inbox-filtered-count" class="text-xs opacity-60"></span>
       </div>
       {% if filters.status == 'new' %}
-      <div class="flex flex-wrap items-center gap-2 mt-2" id="inbox-bulk">
+      <div class="flex flex-wrap items-center gap-2 mt-2 bulk-toolbar rounded-box p-2" id="inbox-bulk">
         <label class="flex items-center gap-2 text-sm cursor-pointer">
-          <input id="inbox-select-all" type="checkbox" class="checkbox checkbox-xs" title="Select all visible nuggets">
+          <input id="inbox-select-all" type="checkbox" class="checkbox checkbox-xs bulk-select-all" title="Select all visible nuggets" aria-label="Select all visible nuggets">
           <span>Select all</span>
         </label>
         <span id="inbox-selected-count" class="text-xs opacity-60">0 selected</span>
         <details class="dropdown task-picker">
-          <summary tabindex="0" role="button" class="btn btn-sm btn-outline flex items-center gap-1">Attach to task… <span class="opacity-60">▾</span></summary>
+          <summary tabindex="0" role="button" class="btn btn-sm btn-outline btn-accent flex items-center gap-1">Attach to task… <span class="opacity-60">▾</span></summary>
           <div class="dropdown-content z-20 w-80 p-2 shadow bg-base-100 rounded-box">
             <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
                    hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
@@ -79,16 +79,20 @@
           <input type="hidden" name="status" value="{{ filters.status }}">
           <input type="hidden" name="owner" value="{{ filters.owner }}">
           <input class="input input-bordered input-xs" name="title" placeholder="New task title…">
-          <button class="btn btn-xs" type="submit" title="Attach all selected to one new task">＋ New task</button>
+          <button class="btn btn-xs btn-accent" type="submit" title="Attach all selected to one new task">＋ New task</button>
         </form>
-        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/bulk/done"
+        <button class="btn btn-xs btn-ghost btn-accent" type="button" hx-post="/gui/inbox/bulk/done"
                 hx-include=".bulk-select:checked"
                 hx-vals='{"status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
                 hx-target="#inbox-list">Already done</button>
-        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/bulk/dismiss"
+        <button class="btn btn-xs btn-ghost btn-accent" type="button" hx-post="/gui/inbox/bulk/dismiss"
                 hx-include=".bulk-select:checked"
                 hx-vals='{"status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
                 hx-target="#inbox-list">Dismiss</button>
+        <span class="selection-key ml-auto text-xs opacity-80" aria-hidden="true">
+          <span class="selection-key-item"><span class="selection-swatch" style="background-color: var(--select-attach)"></span> attach to group</span>
+          <span class="selection-key-item"><span class="selection-swatch" style="background-color: var(--select-bulk)"></span> bulk select</span>
+        </span>
       </div>
       {% endif %}
       <p class="text-sm opacity-70">

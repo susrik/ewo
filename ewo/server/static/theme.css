@@ -35,6 +35,22 @@
   --bc: #1f2937;
 }
 
+/* --- inbox selection accents ---
+   Two inbox workflows put checkboxes side by side when a suggested task
+   groups several nuggets: "attach to group" (blue) and "bulk actions"
+   (purple). These tokens are the single place to re-theme either workflow
+   — tweak the hex (or map to another daisyUI token) here and everything
+   that uses them follows. The bulk-toolbar tint is derived from
+   --select-bulk so it always stays in step. */
+:root {
+  --select-attach: var(--p);  /* blue   — attach-to-group selection */
+  --select-attach-c: var(--pc);
+  --select-bulk: var(--a);    /* purple — bulk-action selection     */
+  --select-bulk-c: var(--ac);
+  --select-bulk-soft: color-mix(in srgb, var(--select-bulk) 7%, transparent);
+  --select-bulk-line: color-mix(in srgb, var(--select-bulk) 32%, transparent);
+}
+
 /* --- checkbox selected state ---
    daisyUI's prebuilt full.css draws the checkbox checkmark with
    ``oklch(var(--bc)/...)``; the hex theme tokens above make those
@@ -61,6 +77,54 @@
   background-repeat: no-repeat;
   background-position: center;
   background-size: 60% 60%;
+}
+
+/* --- per-workflow selection tints ---
+   Both checkboxes reuse the white checkmark above; these rules only re-tint
+   the box so the two side-by-side selectors are told apart at a glance:
+   blue = "attach to group", purple = "bulk actions". See the --select-*
+   tokens above to re-theme. */
+.attach-select:checked,
+.attach-select[aria-checked="true"],
+.attach-select:indeterminate,
+.attach-select[aria-checked="mixed"] {
+  border-color: var(--select-attach);
+  background-color: var(--select-attach);
+}
+.bulk-select:checked,
+.bulk-select[aria-checked="true"],
+.bulk-select:indeterminate,
+.bulk-select[aria-checked="mixed"],
+.bulk-select-all:checked,
+.bulk-select-all[aria-checked="true"],
+.bulk-select-all:indeterminate,
+.bulk-select-all[aria-checked="mixed"] {
+  border-color: var(--select-bulk);
+  background-color: var(--select-bulk);
+}
+
+/* --- bulk-action toolbar + selection legend --- */
+.bulk-toolbar {
+  border: 1px solid var(--select-bulk-line);
+  background-color: var(--select-bulk-soft);
+}
+.selection-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.selection-key .selection-key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+.selection-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 0.2rem;
+  border: 1px solid rgba(0, 0, 0, 0.2);
 }
 
 /* --- priority row shading (very light tints) --- */
