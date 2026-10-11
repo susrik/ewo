@@ -80,10 +80,18 @@
 }
 
 /* --- per-workflow selection tints ---
-   Both checkboxes reuse the white checkmark above; these rules only re-tint
-   the box so the two side-by-side selectors are told apart at a glance:
+   Both selectors carry their colour in the border *before* they're ticked, so
+   two side-by-side checkboxes are told apart at a glance; the checked rules
+   below fill the box with the same colour (reusing the white checkmark above):
    blue = "attach to group", purple = "bulk actions". See the --select-*
    tokens above to re-theme. */
+.checkbox.attach-select {
+  border-color: var(--select-attach);
+}
+.checkbox.bulk-select,
+.checkbox.bulk-select-all {
+  border-color: var(--select-bulk);
+}
 .attach-select:checked,
 .attach-select[aria-checked="true"],
 .attach-select:indeterminate,
@@ -125,6 +133,38 @@
   height: 0.7rem;
   border-radius: 0.2rem;
   border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+/* --- selection-action buttons ---
+   The group and bulk action buttons share the same --select-* tokens as their
+   checkboxes, so each workflow re-themes from a single place. */
+.btn-group-attach {
+  color: var(--select-attach);
+  border-color: var(--select-attach);
+}
+.btn-group-attach:hover {
+  background-color: var(--select-attach);
+  color: var(--select-attach-c);
+  border-color: var(--select-attach);
+}
+.btn-bulk {
+  color: var(--select-bulk);
+  border-color: var(--select-bulk);
+}
+.btn-bulk:hover {
+  background-color: var(--select-bulk);
+  color: var(--select-bulk-c);
+  border-color: var(--select-bulk);
+}
+.btn-bulk-solid {
+  color: var(--select-bulk-c);
+  background-color: var(--select-bulk);
+  border-color: var(--select-bulk);
+}
+.btn-bulk-solid:hover {
+  background-color: var(--select-bulk);
+  color: var(--select-bulk-c);
+  border-color: var(--select-bulk);
 }
 
 /* --- priority row shading (very light tints) --- */

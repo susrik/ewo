@@ -50,10 +50,11 @@ alongside the general selection.
 
 When a suggested task groups several nuggets, two checkboxes sit side by side
 on each row; they're colour-coded (with a legend above the bulk toolbar) so
-they aren't confused:
+they aren't confused. Each shows its colour in its **border** even before it's
+ticked, and fills when checked:
 
 - the **blue** checkbox — *Include in the group attach* — controls which
-  nuggets the per-task *Attach selected to #N* shortcut attaches;
+  nuggets the per-task *Attach selected to #N* shortcut (also blue) attaches;
 - the **purple** checkbox — *Select for bulk actions* — is the general
   selection, feeding the purple bulk toolbar (*Select all*, *Attach to task…*,
   *＋ New task*, *Already done*, *Dismiss*).
@@ -61,7 +62,8 @@ they aren't confused:
 Both colours come from the inbox selection tokens in
 `ewo/server/static/theme.css` — `--select-attach` (blue) and `--select-bulk`
 (purple). Change those two variables to re-theme either workflow; the purple
-bulk-toolbar tint is derived from `--select-bulk`, so it follows automatically.
+bulk-toolbar tint is derived from `--select-bulk`, and the group/bulk action
+buttons are driven by the same tokens, so everything follows automatically.
 
 After any bulk operation the filter string is kept, the list stays filtered to
 it, and the "showing *M* of *N*" hint reflects the nuggets still matching.
