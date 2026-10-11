@@ -35,20 +35,99 @@
   --bc: #1f2937;
 }
 
-/* --- inbox selection accents ---
-   Two inbox workflows put checkboxes side by side when a suggested task
-   groups several nuggets: "attach to group" (blue) and "bulk actions"
-   (purple). These tokens are the single place to re-theme either workflow
-   — tweak the hex (or map to another daisyUI token) here and everything
-   that uses them follows. The bulk-toolbar tint is derived from
-   --select-bulk so it always stays in step. */
+/* --- inbox mode themes ---
+   The inbox has three mutually-exclusive views, each with its own colour so
+   the panels read clearly apart. Each panel sets a scoped ``--accent`` (with
+   -c/-soft/-line variants) and the generic ``.accent-*`` controls below inherit
+   it, so re-theming a whole view is a single token here:
+     review            — purple (bulk actions)
+     suggested tasks   — blue   (attach to an existing task)
+     suggested new     — teal   (create a brand-new task) */
 :root {
-  --select-attach: var(--p);  /* blue   — attach-to-group selection */
-  --select-attach-c: var(--pc);
-  --select-bulk: var(--a);    /* purple — bulk-action selection     */
-  --select-bulk-c: var(--ac);
-  --select-bulk-soft: color-mix(in srgb, var(--select-bulk) 7%, transparent);
-  --select-bulk-line: color-mix(in srgb, var(--select-bulk) 32%, transparent);
+  --accent: var(--p);
+  --accent-c: var(--pc);
+
+  --theme-review: var(--a);        /* purple */
+  --theme-review-c: var(--ac);
+  --theme-review-soft: color-mix(in srgb, var(--theme-review) 7%, transparent);
+  --theme-review-line: color-mix(in srgb, var(--theme-review) 32%, transparent);
+
+  --theme-suggested: var(--p);     /* blue */
+  --theme-suggested-c: var(--pc);
+  --theme-suggested-soft: color-mix(in srgb, var(--theme-suggested) 7%, transparent);
+  --theme-suggested-line: color-mix(in srgb, var(--theme-suggested) 32%, transparent);
+
+  --theme-new: var(--s);           /* teal */
+  --theme-new-c: var(--sc);
+  --theme-new-soft: color-mix(in srgb, var(--theme-new) 7%, transparent);
+  --theme-new-line: color-mix(in srgb, var(--theme-new) 32%, transparent);
+}
+
+/* review (purple) bulk toolbar */
+.bulk-toolbar {
+  --accent: var(--theme-review);
+  --accent-c: var(--theme-review-c);
+  border: 1px solid var(--theme-review-line);
+  background-color: var(--theme-review-soft);
+}
+
+/* suggested-tasks (blue) panel */
+.panel-suggested {
+  --accent: var(--theme-suggested);
+  --accent-c: var(--theme-suggested-c);
+  border: 1px solid var(--theme-suggested-line);
+  background-color: var(--theme-suggested-soft);
+}
+
+/* suggested-new-tasks (teal) panel */
+.panel-new {
+  --accent: var(--theme-new);
+  --accent-c: var(--theme-new-c);
+  border: 1px solid var(--theme-new-line);
+  background-color: var(--theme-new-soft);
+}
+
+/* --- themed controls (inherit the enclosing panel's --accent) --- */
+.accent-checkbox {
+  border-color: var(--accent);
+}
+.accent-checkbox:checked,
+.accent-checkbox[aria-checked="true"],
+.accent-checkbox:indeterminate,
+.accent-checkbox[aria-checked="mixed"] {
+  border-color: var(--accent);
+  background-color: var(--accent);
+}
+.accent-btn-solid {
+  color: var(--accent-c);
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+.accent-btn-solid:hover {
+  background-color: var(--accent);
+  color: var(--accent-c);
+  border-color: var(--accent);
+}
+
+/* --- review-mode (purple) action buttons --- */
+.btn-bulk {
+  color: var(--theme-review);
+  border-color: var(--theme-review);
+}
+.btn-bulk:hover {
+  background-color: var(--theme-review);
+  color: var(--theme-review-c);
+  border-color: var(--theme-review);
+}
+.btn-bulk-solid {
+  color: var(--theme-review-c);
+  background-color: var(--theme-review);
+  border-color: var(--theme-review);
+}
+.btn-bulk-solid:hover {
+  background-color: var(--theme-review);
+  color: var(--theme-review-c);
+  border-color: var(--theme-review);
 }
 
 /* --- checkbox selected state ---
@@ -77,94 +156,6 @@
   background-repeat: no-repeat;
   background-position: center;
   background-size: 60% 60%;
-}
-
-/* --- per-workflow selection tints ---
-   Both selectors carry their colour in the border *before* they're ticked, so
-   two side-by-side checkboxes are told apart at a glance; the checked rules
-   below fill the box with the same colour (reusing the white checkmark above):
-   blue = "attach to group", purple = "bulk actions". See the --select-*
-   tokens above to re-theme. */
-.checkbox.attach-select {
-  border-color: var(--select-attach);
-}
-.checkbox.bulk-select,
-.checkbox.bulk-select-all {
-  border-color: var(--select-bulk);
-}
-.attach-select:checked,
-.attach-select[aria-checked="true"],
-.attach-select:indeterminate,
-.attach-select[aria-checked="mixed"] {
-  border-color: var(--select-attach);
-  background-color: var(--select-attach);
-}
-.bulk-select:checked,
-.bulk-select[aria-checked="true"],
-.bulk-select:indeterminate,
-.bulk-select[aria-checked="mixed"],
-.bulk-select-all:checked,
-.bulk-select-all[aria-checked="true"],
-.bulk-select-all:indeterminate,
-.bulk-select-all[aria-checked="mixed"] {
-  border-color: var(--select-bulk);
-  background-color: var(--select-bulk);
-}
-
-/* --- bulk-action toolbar + selection legend --- */
-.bulk-toolbar {
-  border: 1px solid var(--select-bulk-line);
-  background-color: var(--select-bulk-soft);
-}
-.selection-key {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-.selection-key .selection-key-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  white-space: nowrap;
-}
-.selection-swatch {
-  display: inline-block;
-  width: 0.7rem;
-  height: 0.7rem;
-  border-radius: 0.2rem;
-  border: 1px solid rgba(0, 0, 0, 0.2);
-}
-
-/* --- selection-action buttons ---
-   The group and bulk action buttons share the same --select-* tokens as their
-   checkboxes, so each workflow re-themes from a single place. */
-.btn-group-attach {
-  color: var(--select-attach);
-  border-color: var(--select-attach);
-}
-.btn-group-attach:hover {
-  background-color: var(--select-attach);
-  color: var(--select-attach-c);
-  border-color: var(--select-attach);
-}
-.btn-bulk {
-  color: var(--select-bulk);
-  border-color: var(--select-bulk);
-}
-.btn-bulk:hover {
-  background-color: var(--select-bulk);
-  color: var(--select-bulk-c);
-  border-color: var(--select-bulk);
-}
-.btn-bulk-solid {
-  color: var(--select-bulk-c);
-  background-color: var(--select-bulk);
-  border-color: var(--select-bulk);
-}
-.btn-bulk-solid:hover {
-  background-color: var(--select-bulk);
-  color: var(--select-bulk-c);
-  border-color: var(--select-bulk);
 }
 
 /* --- priority row shading (very light tints) --- */

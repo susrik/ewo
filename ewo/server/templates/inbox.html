@@ -30,79 +30,34 @@
     <div class="card-body">
       <div class="flex flex-wrap items-center gap-2">
         <h2 class="card-title flex-1">Inbox <span class="badge badge-primary" id="inbox-count">{{ count }}</span></h2>
-        {% if llm_enabled %}
-        <form hx-post="/gui/inbox/suggest" hx-target="#inbox-create-result" hx-indicator="#suggest-spinner" class="flex gap-2 items-center">
-          <input type="hidden" name="status" value="{{ filters.status }}">
-          <input type="hidden" name="owner" value="{{ filters.owner }}">
-          <button class="btn btn-sm" type="submit" title="Recompute suggested tasks for new nuggets">Suggest tasks</button>
-          <span id="suggest-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
-        </form>
-        <form hx-post="/gui/inbox/suggest-creates" hx-target="#inbox-create-result" hx-indicator="#create-spinner" class="flex gap-2 items-center">
-          <button class="btn btn-sm" type="submit" title="AI proposes new tasks from clusters of unmapped notes">Suggest new tasks</button>
-          <span id="create-spinner" class="htmx-indicator loading loading-spinner loading-sm"></span>
-        </form>
-        {% endif %}
-        <form hx-get="/gui/inbox" hx-target="#inbox-list" hx-trigger="change" class="flex gap-2">
-          <select class="select select-bordered select-sm" name="status">
+      </div>
+
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <form id="inbox-filters" class="contents" hx-get="/gui/inbox" hx-target="#inbox-list"
+              hx-trigger="change" hx-swap="innerHTML" hx-push-url="true">
+          <div class="join" role="radiogroup" aria-label="Inbox view">
+            <input type="radio" name="mode" value="review" class="join-item btn btn-sm" aria-label="Review" {% if mode == 'review' %}checked{% endif %}>
+            <input type="radio" name="mode" value="suggested_tasks" class="join-item btn btn-sm" aria-label="Suggested tasks" {% if mode == 'suggested_tasks' %}checked{% endif %}>
+            <input type="radio" name="mode" value="suggested_new_tasks" class="join-item btn btn-sm" aria-label="Suggested new tasks" {% if mode == 'suggested_new_tasks' %}checked{% endif %}>
+          </div>
+          <select class="select select-bordered select-sm" name="status" aria-label="Status filter">
             {% for s in item_statuses %}<option value="{{ s.value }}" {% if filters.status == s.value %}selected{% endif %}>{{ s.value }}</option>{% endfor %}
             <option value="all" {% if filters.status == 'all' %}selected{% endif %}>all</option>
           </select>
-          <select class="select select-bordered select-sm" name="owner">
+          <select class="select select-bordered select-sm" name="owner" aria-label="Owner filter">
             <option value="">anyone</option>
             {% for person in people %}<option value="{{ person.id }}" {% if filters.owner == person.id|string %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
           </select>
         </form>
-      </div>
-      <div class="flex flex-wrap items-center gap-2 mt-2">
         <input id="inbox-search" type="search" class="input input-bordered input-sm grow min-w-0 md:grow-0 md:w-64" placeholder="Filter nuggets…" autocomplete="off">
         <span id="inbox-filtered-count" class="text-xs opacity-60"></span>
+        <span id="inbox-selected-count" class="text-xs opacity-60 ml-auto">0 selected</span>
       </div>
-      {% if filters.status == 'new' %}
-      <div class="flex flex-wrap items-center gap-2 mt-2 bulk-toolbar rounded-box p-2" id="inbox-bulk">
-        <label class="flex items-center gap-2 text-sm cursor-pointer">
-          <input id="inbox-select-all" type="checkbox" class="checkbox checkbox-xs bulk-select-all" title="Select all visible nuggets" aria-label="Select all visible nuggets">
-          <span>Select all</span>
-        </label>
-        <span id="inbox-selected-count" class="text-xs opacity-60">0 selected</span>
-        <details class="dropdown task-picker">
-          <summary tabindex="0" role="button" class="btn btn-sm btn-outline btn-bulk flex items-center gap-1">Attach to task… <span class="opacity-60">▾</span></summary>
-          <div class="dropdown-content z-20 w-80 p-2 shadow bg-base-100 rounded-box">
-            <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
-                   hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
-                   hx-target="#inbox-bulk-attach-results"
-                   hx-vals='{"action": "bulk_attach", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
-                   autocomplete="off">
-            <div id="inbox-bulk-attach-results" class="mt-1"></div>
-          </div>
-        </details>
-        <form hx-post="/gui/inbox/bulk/attach" hx-include=".bulk-select:checked" hx-target="#inbox-list" class="flex items-center gap-1">
-          <input type="hidden" name="status" value="{{ filters.status }}">
-          <input type="hidden" name="owner" value="{{ filters.owner }}">
-          <input class="input input-bordered input-xs" name="title" placeholder="New task title…">
-          <button class="btn btn-xs btn-bulk-solid" type="submit" title="Attach all selected to one new task">＋ New task</button>
-        </form>
-        <button class="btn btn-xs btn-ghost btn-bulk" type="button" hx-post="/gui/inbox/bulk/done"
-                hx-include=".bulk-select:checked"
-                hx-vals='{"status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
-                hx-target="#inbox-list">Already done</button>
-        <button class="btn btn-xs btn-ghost btn-bulk" type="button" hx-post="/gui/inbox/bulk/dismiss"
-                hx-include=".bulk-select:checked"
-                hx-vals='{"status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
-                hx-target="#inbox-list">Dismiss</button>
-        <span class="selection-key ml-auto text-xs opacity-80" aria-hidden="true">
-          <span class="selection-key-item"><span class="selection-swatch" style="background-color: var(--select-attach)"></span> attach to group</span>
-          <span class="selection-key-item"><span class="selection-swatch" style="background-color: var(--select-bulk)"></span> bulk select</span>
-        </span>
-      </div>
-      {% endif %}
-      <p class="text-sm opacity-70">
-        Nuggets (work items found in your notes), grouped by suggested task. <b>Attach</b> adds one to the
+      <p class="text-sm opacity-70 mt-2">
+        Nuggets (work items found in your notes). <b>Attach</b> adds one to the
         selected task (or a new one); <b>Dismiss</b> if it isn't actionable; <b>Already done</b> if the note
         is stale — the note itself is never modified.
       </p>
-      <div id="inbox-create-result">
-        {% include "_inbox_create.html" %}
-      </div>
       <div id="inbox-list">
         {% include "_inbox.html" %}
       </div>
@@ -117,33 +72,46 @@
   (function () {
     var search = document.getElementById("inbox-search");
     var list = document.getElementById("inbox-list");
-    var selectAll = document.getElementById("inbox-select-all");
-    var selectedCount = document.getElementById("inbox-selected-count");
     var filteredCount = document.getElementById("inbox-filtered-count");
+    var selectedCount = document.getElementById("inbox-selected-count");
+
+    // The set of selected nugget ids (as strings). Source of truth for what's
+    // checked across tab switches and list swaps; it's re-applied onto the
+    // freshly server-rendered checkboxes whenever #inbox-list is swapped.
+    var selected = new Set();
 
     function rows() {
       return list ? list.querySelectorAll(".nugget-row") : [];
     }
-    function visibleRows() {
-      var out = [];
-      rows().forEach(function (row) {
-        if (!row.classList.contains("hidden")) out.push(row);
-      });
-      return out;
-    }
     function rowBox(row) {
-      return row.querySelector(".bulk-select");
+      return row.querySelector(".nugget-select");
     }
 
-    function updateSelection() {
-      var boxes = list ? list.querySelectorAll(".nugget-row:not(.hidden) .bulk-select") : [];
-      var checked = 0, total = 0;
-      boxes.forEach(function (cb) { total++; if (cb.checked) checked++; });
-      if (selectedCount) selectedCount.textContent = checked + " selected";
-      if (selectAll) {
-        selectAll.checked = total > 0 && checked === total;
-        selectAll.indeterminate = checked > 0 && checked < total;
-      }
+    function refreshCounts() {
+      if (selectedCount) selectedCount.textContent = selected.size + " selected";
+      // per-group "x of y selected" for the suggested-task/suggestion panels
+      document.querySelectorAll("[data-group]").forEach(function (group) {
+        var boxes = group.querySelectorAll(".nugget-select");
+        var checked = 0;
+        boxes.forEach(function (cb) { if (cb.checked) checked++; });
+        var el = group.querySelector("[data-group-count]");
+        if (el) el.textContent = checked + " of " + boxes.length + " selected";
+      });
+    }
+
+    function resyncSelection() {
+      // Re-apply the persisted selection onto rendered checkboxes and prune any
+      // ids that are no longer rendered (a nugget consumed elsewhere, or not
+      // present in the current mode).
+      var rendered = new Set();
+      rows().forEach(function (row) {
+        var cb = rowBox(row);
+        if (!cb) return;
+        rendered.add(cb.value);
+        cb.checked = selected.has(cb.value);
+      });
+      selected.forEach(function (id) { if (!rendered.has(id)) selected.delete(id); });
+      refreshCounts();
     }
 
     function applyFilter() {
@@ -156,28 +124,48 @@
         if (match) {
           shown++;
         } else {
+          // Filtering drops a nugget from view and from the bulk/groups actions,
+          // so its selection is withdrawn too (never act on hidden nuggets).
           var cb = rowBox(row);
-          if (cb) cb.checked = false;
+          if (cb && cb.checked) { cb.checked = false; selected.delete(cb.value); }
         }
       });
       if (filteredCount) {
         filteredCount.textContent = q ? "showing " + shown + " of " + rows().length : "";
       }
-      updateSelection();
+      refreshCounts();
     }
 
     if (search) search.addEventListener("input", applyFilter);
-    if (selectAll) selectAll.addEventListener("change", function () {
-      visibleRows().forEach(function (row) {
-        var cb = rowBox(row);
-        if (cb) cb.checked = selectAll.checked;
-      });
-      updateSelection();
-    });
+
+    // Delegate all checkbox handling on #inbox-list so it survives swaps.
     if (list) list.addEventListener("change", function (e) {
-      if (e.target && e.target.classList && e.target.classList.contains("bulk-select")) updateSelection();
+      var t = e.target;
+      if (!t || !t.classList) return;
+      if (t.classList.contains("nugget-select")) {
+        if (t.checked) selected.add(t.value); else selected.delete(t.value);
+        refreshCounts();
+      } else if (t.classList.contains("group-toggle")) {
+        var group = t.closest("[data-group]");
+        if (group) group.querySelectorAll(".nugget-select").forEach(function (cb) {
+          cb.checked = t.checked;
+          if (t.checked) selected.add(cb.value); else selected.delete(cb.value);
+        });
+        refreshCounts();
+      } else if (t.classList.contains("select-all")) {
+        // Review-mode "select all": toggle every visible nugget.
+        rows().forEach(function (row) {
+          if (row.classList.contains("hidden")) return;
+          var cb = rowBox(row);
+          if (!cb) return;
+          cb.checked = t.checked;
+          if (t.checked) selected.add(cb.value); else selected.delete(cb.value);
+        });
+        refreshCounts();
+      }
     });
 
+    // Re-apply the text filter and selection after any list swap.
     function reapplyFilter(event) {
       if (!list) return;
       var target = event.detail.target;
@@ -186,31 +174,16 @@
         (target && target.id && target.id.indexOf("nugget-") === 0) ||
         (target && target.contains && target.contains(list)) ||
         (target && list.contains(target));
-      if (inInbox) applyFilter();
+      if (inInbox) {
+        resyncSelection();
+        applyFilter();
+      }
     }
-    // Re-apply on both swap and settle: htmx's attribute settling copies the
-    // server-rendered `class` back onto id-matched rows during `htmx:afterSettle`,
-    // wiping the `hidden` class the filter toggles (so a bulk action re-renders
-    // the list unfiltered). Re-applying on `htmx:afterSettle` keeps the shown
-    // list in sync with the reported filter count.
     document.body.addEventListener("htmx:afterSwap", reapplyFilter);
     document.body.addEventListener("htmx:afterSettle", reapplyFilter);
 
-    // Persist the suggest-panel collapse state (the panel is re-rendered on
-    // swap, so delegate on the document and use capture since `toggle` does
-    // not bubble).
-    document.addEventListener("toggle", function (e) {
-      var el = e.target;
-      if (el && el.id === "inbox-create-collapse") {
-        fetch("/gui/inbox/suggest/collapse", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: "collapsed=" + (el.open ? "0" : "1"),
-        });
-      }
-    }, true);
-
     applyFilter();
+    resyncSelection();
   })();
 </script>
 {% endblock %}

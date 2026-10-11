@@ -49,8 +49,8 @@ Every run records an append-only log of `JobLogEntry` rows as it executes —
 steps, errors, and per-call LLM inference detail (which model, prompt/token
 sizes, timing, and a truncated prompt preview). The **Jobs** page streams this
 log to every open browser session in real time (SSE) for any running or
-finished job; the Inbox "Suggest tasks", "Suggest new tasks", and "Scan notes"
-buttons stream the same way.
+finished job; the Inbox *Scan notes*, *Recompute*, and *Generate suggestions*
+actions stream the same way.
 
 - **Jobs page** — a "Running" banner lists in-flight runs; the *Log* column
   links to each run's log; *run now* opens the live view inline.

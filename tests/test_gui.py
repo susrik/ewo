@@ -1087,7 +1087,6 @@ def test_inbox_page_and_actions(client: TestClient, session: Session) -> None:
     assert "chase Matti" in page.text and "eurohpc/x.md" in page.text
     assert "notes disabled in config" in page.text
     assert "Never scanned" in page.text
-    assert "No suggested task" in page.text  # nothing matched yet
     assert "break-words" in page.text  # unbroken text can't blow out the width
     assert "break-all" in page.text  # excerpts/tokens force-break even without whitespace
     assert "min-w-0" in page.text  # grid/flex items can shrink below content width
@@ -1127,11 +1126,11 @@ def test_inbox_attach_to_existing_and_group(client: TestClient, session: Session
     item_id = _item(session)
     other = _item(session, "budget", "ai/y.md")
 
-    # a suggestion groups the nugget under its task with a bulk button
+    # a suggestion groups the nugget under its task in the "suggested tasks" tab
     nuggets.update_nugget(session, item_id, suggested_task_id=task["id"])
-    page = client.get("/inbox")
-    assert f"→ #{task['id']} the topic" in page.text
-    assert "Attach selected to #" in page.text
+    nuggets.update_nugget(session, other, suggested_task_id=task["id"])
+    page = client.get("/inbox", params={"mode": "suggested_tasks"})
+    assert f"#{task['id']} the topic" in page.text
     assert "✓ Attach to #" in page.text  # one-click shortcut appears when suggested
 
     # single attach to the existing task via the picker
@@ -1139,10 +1138,12 @@ def test_inbox_attach_to_existing_and_group(client: TestClient, session: Session
     assert "attached" in attached.text
     assert client.get(f"/api/tasks/{task['id']}/nuggets").json()[0]["id"] == item_id
 
-    # bulk attach for the remaining group
-    nuggets.update_nugget(session, other, suggested_task_id=task["id"])
-    response = client.post("/gui/inbox/attach-group", data={"task_id": str(task["id"])})
-    assert "Nothing to review" in response.text
+    # the remaining nugget is attached via the group's "Attach" action
+    response = client.post(
+        "/gui/inbox/attach-group",
+        data={"task_id": str(task["id"]), "nugget_ids": str(other)},
+    )
+    assert "No suggested tasks yet" in response.text
     assert len(client.get(f"/api/tasks/{task['id']}/nuggets").json()) == 2
 
 
@@ -1153,21 +1154,19 @@ def test_inbox_attach_group_selection(client: TestClient, session: Session) -> N
     nuggets.update_nugget(session, first, suggested_task_id=task["id"])
     nuggets.update_nugget(session, second, suggested_task_id=task["id"])
 
-    # only the checked nugget is attached (nugget_ids excludes `second`)
+    # only the selected nugget is attached (nugget_ids excludes `second`)
     client.post(
         "/gui/inbox/attach-group",
-        data={"task_id": str(task["id"]), "selected": "1", "nugget_ids": str(first)},
+        data={"task_id": str(task["id"]), "nugget_ids": str(first)},
     )
     attached = client.get(f"/api/tasks/{task['id']}/nuggets").json()
     assert [n["id"] for n in attached] == [first]
     # the unchecked nugget stays new and is still suggested for the task
     assert client.get("/api/nuggets").json()[0]["id"] == second
 
-    # unchecking everything (no nugget_ids) attaches nothing
-    client.post(
-        "/gui/inbox/attach-group",
-        data={"task_id": str(task["id"]), "selected": "1"},
-    )
+    # no selection → inline error, nothing attached
+    response = client.post("/gui/inbox/attach-group", data={"task_id": str(task["id"])})
+    assert "Select at least one note to attach" in response.text
     assert [n["id"] for n in client.get(f"/api/tasks/{task['id']}/nuggets").json()] == [first]
 
 
@@ -1189,6 +1188,7 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
                             "kind": "create",
                             "nugget_ids": [a, b],
                             "title": "alpha beta",
+                            "description": "do both bits",
                             "reason": "pair",
                         }
                     ]
@@ -1199,16 +1199,19 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
     posted = client.post("/gui/inbox/suggest-creates")
     assert "inbox_suggest" in posted.text  # live job-log view streamed in
     _wait_for_run(client, "inbox_suggest")
-    panel = client.get("/gui/inbox/create-panel")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "alpha beta" in panel.text and "alpha thing" in panel.text
+    assert "do both bits" in panel.text  # description in the editable draft
 
     # untick one nugget: only the selected one becomes the new task
     created = client.post(
-        "/gui/inbox/create-group", data={"title": "alpha beta", "nugget_ids": str(a)}
+        "/gui/inbox/create-group",
+        data={"title": "alpha beta", "description": "do both bits", "nugget_ids": str(a)},
     )
     assert created.status_code == 200
     assert client.get("/api/nuggets", params={"status": "attached"}).json()[0]["id"] == a
     assert [n["id"] for n in client.get("/api/nuggets").json()] == [b]
+    assert client.get("/api/tasks").json()[0]["description"] == "do both bits"
 
     # no nuggets selected → inline error, nothing created
     response = client.post("/gui/inbox/create-group", data={"title": "alpha beta"})
@@ -1222,7 +1225,7 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
     client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
     client.post("/gui/inbox/suggest-creates")
     _wait_for_run(client, "inbox_suggest")
-    panel = client.get("/gui/inbox/create-panel")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "No new-task suggestions right now." in panel.text
 
 
@@ -1316,8 +1319,8 @@ def test_inbox_bulk_filter_markers(client: TestClient, session: Session) -> None
 
     page = client.get("/inbox")
     assert 'id="inbox-search"' in page.text
-    assert 'id="inbox-select-all"' in page.text
-    assert "bulk-select" in page.text
+    assert "select-all" in page.text
+    assert "nugget-select" in page.text
     assert "nugget-row" in page.text
     assert "data-search=" in page.text
     # the filter is re-applied after htmx finishes swapping/settling so a bulk
@@ -1330,7 +1333,7 @@ def test_inbox_bulk_filter_markers(client: TestClient, session: Session) -> None
 
     # the bulk toolbar is only shown for the "new" status view
     all_page = client.get("/inbox", params={"status": "all"})
-    assert 'id="inbox-select-all"' not in all_page.text
+    assert "bulk-toolbar" not in all_page.text
 
 
 def test_inbox_bulk_attach_task_search(client: TestClient, session: Session) -> None:
@@ -1343,7 +1346,7 @@ def test_inbox_bulk_attach_task_search(client: TestClient, session: Session) -> 
     )
     assert results.status_code == 200
     assert "/gui/inbox/bulk/attach" in results.text
-    assert ".bulk-select:checked" in results.text
+    assert ".nugget-select:checked" in results.text
 
 
 def _suggestion(session: Session, title: str, *nugget_ids: int) -> NuggetSuggestion:
@@ -1380,17 +1383,17 @@ def test_inbox_suggest_panel_clear_and_delete(client: TestClient, session: Sessi
     s1 = _suggestion(session, "pair one", a, b)
     _suggestion(session, "pair two", a, b)
 
-    panel = client.get("/gui/inbox/create-panel")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "pair one" in panel.text and "pair two" in panel.text
 
     # delete a single suggestion; the other remains
     client.post(f"/gui/inbox/suggest/{s1.id}/delete")
-    panel = client.get("/gui/inbox/create-panel")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "pair one" not in panel.text and "pair two" in panel.text
 
     # clear drops everything
     client.post("/gui/inbox/suggest/clear")
-    panel = client.get("/gui/inbox/create-panel")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "No new-task suggestions right now." in panel.text
 
 
@@ -1404,31 +1407,14 @@ def test_inbox_suggest_bulk_dismiss_keeps_remaining(client: TestClient, session:
     assert response.status_code == 200
     assert client.get("/api/nuggets", params={"status": "dismissed"}).json()[0]["id"] == a
 
-    # the card keeps its remaining nugget (rather than disappearing)
-    panel = client.get("/gui/inbox/create-panel")
+    # the panel keeps its remaining nugget (rather than disappearing)
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "the pair" in panel.text and "beta thing" in panel.text
 
-    # dismissing the last one retires the card entirely
+    # dismissing the last one retires the panel entirely
     client.post("/gui/inbox/suggest/bulk", data={"action": "dismiss", "nugget_ids": [b]})
-    panel = client.get("/gui/inbox/create-panel")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "No new-task suggestions right now." in panel.text
-
-
-def test_inbox_suggest_collapse_toggle(client: TestClient, session: Session) -> None:
-    a = _item(session)
-    _suggestion(session, "the pair", a)
-
-    panel = client.get("/gui/inbox/create-panel")
-    assert 'id="inbox-create-collapse"' in panel.text
-    assert "open" in panel.text  # defaults to expanded
-
-    client.post("/gui/inbox/suggest/collapse", data={"collapsed": "1"})
-    panel = client.get("/gui/inbox/create-panel")
-    assert "open" not in panel.text
-
-    client.post("/gui/inbox/suggest/collapse", data={"collapsed": "0"})
-    panel = client.get("/gui/inbox/create-panel")
-    assert "open" in panel.text
 
 
 def test_inbox_suggest_revalidates_against_attached(client: TestClient, session: Session) -> None:
@@ -1436,14 +1422,14 @@ def test_inbox_suggest_revalidates_against_attached(client: TestClient, session:
     b = _item(session, "beta thing", "ai/b.md")
     _suggestion(session, "the pair", a, b)
 
-    panel = client.get("/gui/inbox/create-panel")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "alpha thing" in panel.text and "beta thing" in panel.text
 
     # `a` is attached elsewhere (e.g. from the main list); the panel reflects
     # this by dropping it without touching `b`.
     task = client.post("/api/tasks", json={"title": "the topic"}).json()
     client.post(f"/gui/nuggets/{a}/attach", data={"task_id": str(task["id"])})
-    panel = client.get("/gui/inbox/create-panel")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
     assert "alpha thing" not in panel.text and "beta thing" in panel.text
 
 

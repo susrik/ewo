@@ -605,6 +605,7 @@ def task_search(
     nugget_id: str = "",
     status: str = "new",
     owner: str = "",
+    mode: str = "review",
 ) -> HTMLResponse:
     """Substring search over open task titles, rendered as selectable rows.
 
@@ -643,6 +644,7 @@ def task_search(
             "max_visible": max(1, config.gui.task_picker_max_visible),
             "status": status,
             "owner": owner,
+            "mode": mode,
         },
     )
 
@@ -932,36 +934,68 @@ def task_delete_link(
 
 # --- inbox (nuggets) ---
 
+InboxMode = Literal["review", "suggested_tasks", "suggested_new_tasks"]
 
-def _inbox_context(session: Session, status: str = "new", owner: str = "") -> dict[str, object]:
-    parsed = None if status == "all" else NuggetStatus(status)
-    items = nuggets.list_nuggets(session, status=parsed, owner_id=_opt_int(owner))
-    open_tasks = tasks.list_tasks(session)
-    open_by_id = {task.id: task for task in open_tasks}
-    groups: list[dict[str, object]] = []
-    if parsed == NuggetStatus.NEW:
-        # pre-organized: one group per suggested task, then everything else
-        suggested: dict[int, list[Nugget]] = {}
-        rest: list[Nugget] = []
+
+def _inbox_groups(
+    items: list[Nugget], open_by_id: dict[int, Task], mode: InboxMode
+) -> list[dict[str, object]]:
+    """The nugget list shaped for each inbox mode.
+
+    ``review`` is a single flat list. ``suggested_tasks`` groups items by their
+    ``suggested_task_id`` (non-new items no longer carry one, so this is
+    naturally new-only). ``suggested_new_tasks`` is handled separately via
+    ``_suggested_new_groups``.
+    """
+    if mode == "suggested_tasks":
+        by_task: dict[int, list[Nugget]] = {}
         for item in items:
             if item.suggested_task_id is not None and item.suggested_task_id in open_by_id:
-                suggested.setdefault(item.suggested_task_id, []).append(item)
-            else:
-                rest.append(item)
-        for task_id, group_items in sorted(
-            suggested.items(), key=lambda kv: open_by_id[kv[0]].title.lower()
-        ):
-            groups.append({"kind": "task", "task": open_by_id[task_id], "nuggets": group_items})
-        if rest:
-            groups.append({"kind": "new", "nuggets": rest})
-    else:
-        by_path: dict[str, list[Nugget]] = {}
-        for item in items:
-            by_path.setdefault(item.path, []).append(item)
-        groups = [
-            {"kind": "path", "path": path, "nuggets": group} for path, group in by_path.items()
+                by_task.setdefault(item.suggested_task_id, []).append(item)
+        return [
+            {"kind": "task", "task": open_by_id[tid], "nuggets": group}
+            for tid, group in sorted(
+                by_task.items(), key=lambda kv: open_by_id[kv[0]].title.lower()
+            )
         ]
-    context: dict[str, object] = {
+    return [{"kind": "all", "nuggets": items}] if items else []
+
+
+def _suggested_new_groups(session: Session, owner_id: int | None = None) -> list[dict[str, object]]:
+    """Each stored ``NuggetSuggestion`` resolved to its still-NEW nuggets."""
+    groups: list[dict[str, object]] = []
+    for suggestion in task_suggestion.list_suggestions(session):
+        remaining = task_suggestion.remaining_nuggets(session, suggestion)
+        if owner_id is not None:
+            remaining = [n for n in remaining if n.owner_id == owner_id]
+        if remaining:
+            groups.append(
+                {
+                    "kind": "suggestion",
+                    "id": suggestion.id,
+                    "title": (suggestion.title or "")[:500],
+                    "description": suggestion.description or "",
+                    "reason": suggestion.reason or "",
+                    "nuggets": remaining,
+                }
+            )
+    return groups
+
+
+def _inbox_context(
+    session: Session, mode: InboxMode = "review", status: str = "new", owner: str = ""
+) -> dict[str, object]:
+    parsed = None if status == "all" else NuggetStatus(status)
+    owner_id = _opt_int(owner)
+    items = nuggets.list_nuggets(session, status=parsed, owner_id=owner_id)
+    open_tasks = tasks.list_tasks(session)
+    groups = (
+        _suggested_new_groups(session, owner_id)
+        if mode == "suggested_new_tasks"
+        else _inbox_groups(items, {task.id: task for task in open_tasks}, mode)
+    )
+    return {
+        "mode": mode,
         "groups": groups,
         "count": len(items),
         "filters": {"status": status, "owner": owner},
@@ -970,30 +1004,6 @@ def _inbox_context(session: Session, status: str = "new", owner: str = "") -> di
         "item_statuses": list(NuggetStatus),
         "kinds": list(NuggetKind),
     }
-    context.update(_suggestion_panel_context(session))
-    return context
-
-
-def _suggestion_panel_context(session: Session) -> dict[str, object]:
-    """The suggested-new-task panel: each stored suggestion resolved to its
-    still-NEW nuggets, plus whether the panel is collapsed."""
-    resolved = []
-    for suggestion in task_suggestion.list_suggestions(session):
-        remaining = task_suggestion.remaining_nuggets(session, suggestion)
-        if remaining:
-            resolved.append(
-                {
-                    "id": suggestion.id,
-                    "title": (suggestion.title or "")[:500],
-                    "reason": suggestion.reason or "",
-                    "nuggets": remaining,
-                }
-            )
-    collapsed = preferences.get_pref(session, "inbox.suggest.collapsed")
-    return {
-        "suggestions": resolved,
-        "suggest_collapsed": bool(collapsed and collapsed.get("value")),
-    }
 
 
 @router.get("/inbox", response_class=HTMLResponse)
@@ -1001,10 +1011,11 @@ def inbox_page(
     request: Request,
     session: SessionDep,
     config: ConfigDep,
+    mode: InboxMode = "review",
     status: str = "new",
     owner: str = "",
 ) -> HTMLResponse:
-    context = _inbox_context(session, status, owner)
+    context = _inbox_context(session, mode, status, owner)
     context["page"] = "inbox"
     context["notes_enabled"] = config.notes.enabled
     context["llm_enabled"] = bool(config.llm.api_key)
@@ -1019,9 +1030,13 @@ def inbox_page(
 
 @router.get("/gui/inbox", response_class=HTMLResponse)
 def inbox_list(
-    request: Request, session: SessionDep, status: str = "new", owner: str = ""
+    request: Request,
+    session: SessionDep,
+    mode: InboxMode = "review",
+    status: str = "new",
+    owner: str = "",
 ) -> HTMLResponse:
-    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/inbox/suggest", response_class=HTMLResponse)
@@ -1031,6 +1046,7 @@ def inbox_suggest(
     session_factory: Annotated[sessionmaker[Session], Depends(get_session_factory)],
     config: ConfigDep,
     llm: Annotated[LLMClient, Depends(get_llm)],
+    mode: Annotated[InboxMode, Form()] = "suggested_tasks",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
@@ -1040,7 +1056,7 @@ def inbox_suggest(
         return _render(request, "_job_log_error.html", {"error": str(exc)})
     with session_factory() as session:
         context = _log_view_context(session, run_id)
-    context["refresh_url"] = f"/gui/inbox?status={status}&owner={owner}"
+    context["refresh_url"] = f"/gui/inbox?mode={mode}&status={status}&owner={owner}"
     context["refresh_target"] = "#inbox-list"
     return _render(request, "_job_log_view.html", context)
 
@@ -1051,20 +1067,25 @@ def inbox_attach_group(
     session: SessionDep,
     config: ConfigDep,
     task_id: Annotated[int, Form()],
+    mode: Annotated[InboxMode, Form()] = "suggested_tasks",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
-    selected: Annotated[str, Form()] = "",
     nugget_ids: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
-    """Attach the selected nuggets suggested for *task_id* (all when none chosen)."""
-    items = nuggets.list_nuggets(session, status=NuggetStatus.NEW, owner_id=_opt_int(owner))
-    chosen = set(nugget_ids or []) if selected else None
-    for item in items:
-        if item.suggested_task_id == task_id and (chosen is None or item.id in chosen):
+    """Attach the selected nuggets in a suggested-task group to that task."""
+    error: str | None = None
+    ids = _bulk_nugget_ids(nugget_ids)
+    if not ids:
+        error = "Select at least one note to attach."
+    for nugget_id in _reviewable_nugget_ids(session, ids):
+        item = nuggets.get_nugget(session, nugget_id)
+        if item.suggested_task_id == task_id:
             nuggets.attach_nugget(
-                session, item.id, task_id=task_id, jira_base_url=_jira_base_url(config)
+                session, nugget_id, task_id=task_id, jira_base_url=_jira_base_url(config)
             )
-    return _render(request, "_inbox_oob.html", _inbox_context(session, status, owner))
+    context = _inbox_context(session, mode, status, owner)
+    context["error"] = error
+    return _render(request, "_inbox.html", context)
 
 
 @router.post("/gui/inbox/suggest-creates", response_class=HTMLResponse)
@@ -1074,82 +1095,74 @@ def inbox_suggest_creates(
     session_factory: Annotated[sessionmaker[Session], Depends(get_session_factory)],
     config: ConfigDep,
     llm: Annotated[LLMClient, Depends(get_llm)],
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     """AI proposes new tasks that group clusters of unmapped notes.
 
     Runs as the ``inbox_suggest`` job so the proposal generation is streamed as
     a live log; the job stores the proposals as ``NuggetSuggestion`` rows the
-    create panel renders until they are consumed or dismissed. Nothing is
-    attached until the user picks notes and confirms."""
+    suggested-new-tasks tab renders until they are consumed or dismissed.
+    Nothing is attached until the user picks notes and confirms."""
     if not config.llm.api_key:
-        return _render(
-            request,
-            "_inbox_create.html",
-            {
-                "suggestions": [],
-                "error": "No LLM API key configured.",
-                "suggest_collapsed": False,
-            },
-        )
+        with session_factory() as session:
+            context = _inbox_context(session, mode, status, owner)
+        context["error"] = "No LLM API key configured."
+        return _render(request, "_inbox.html", context)
     try:
         run_id = registry.run_async("inbox_suggest", session_factory, config, llm)
     except Exception as exc:
         return _render(request, "_job_log_error.html", {"error": str(exc)})
     with session_factory() as session:
         context = _log_view_context(session, run_id)
-    context["refresh_url"] = "/gui/inbox/create-panel"
-    context["refresh_target"] = "#inbox-create-result"
+    context["refresh_url"] = f"/gui/inbox?mode={mode}&status={status}&owner={owner}"
+    context["refresh_target"] = "#inbox-list"
     return _render(request, "_job_log_view.html", context)
 
 
-def _create_panel_context(session: Session, error: str | None = None) -> dict[str, object]:
-    context = _suggestion_panel_context(session)
-    context["error"] = error
-    return context
-
-
-@router.get("/gui/inbox/create-panel", response_class=HTMLResponse)
-def inbox_create_panel(request: Request, session: SessionDep) -> HTMLResponse:
-    """Render the current suggested-new-task proposals from the stored set."""
-    return _render(request, "_inbox_create.html", _create_panel_context(session))
-
-
 @router.post("/gui/inbox/suggest/clear", response_class=HTMLResponse)
-def inbox_suggest_clear(request: Request, session: SessionDep) -> HTMLResponse:
+def inbox_suggest_clear(
+    request: Request,
+    session: SessionDep,
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
     """Drop all stored new-task suggestions."""
     task_suggestion.clear_suggestions(session)
-    return _render(request, "_inbox_create.html", _create_panel_context(session))
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/inbox/suggest/{suggestion_id}/delete", response_class=HTMLResponse)
-def inbox_suggest_delete(request: Request, suggestion_id: int, session: SessionDep) -> HTMLResponse:
+def inbox_suggest_delete(
+    request: Request,
+    suggestion_id: int,
+    session: SessionDep,
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
     """Remove a single stored suggestion without touching its nuggets."""
     task_suggestion.delete_suggestion(session, suggestion_id)
-    return _render(request, "_inbox_create.html", _create_panel_context(session))
-
-
-@router.post("/gui/inbox/suggest/collapse", response_class=HTMLResponse)
-def inbox_suggest_collapse(
-    request: Request, session: SessionDep, collapsed: Annotated[str, Form()] = "0"
-) -> HTMLResponse:
-    preferences.set_pref(session, "inbox.suggest.collapsed", {"value": collapsed == "1"})
-    return _render(request, "_inbox_create.html", _create_panel_context(session))
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/inbox/suggest/bulk", response_class=HTMLResponse)
 def inbox_suggest_bulk(
     request: Request,
     session: SessionDep,
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
     action: Annotated[str, Form()] = "dismiss",
     nugget_ids: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
-    """Bulk dismiss/do the selected nuggets from within a suggestion card."""
+    """Bulk dismiss/done the selected nuggets from within a suggestion group."""
     target = NuggetStatus.DISMISSED if action == "dismiss" else NuggetStatus.ALREADY_DONE
     for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
         nuggets.set_nugget_status(session, nugget_id, target)
-    return _render(request, "_inbox_oob.html", _inbox_context(session, status, owner))
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/inbox/create-group", response_class=HTMLResponse)
@@ -1158,11 +1171,13 @@ def inbox_create_group(
     session: SessionDep,
     config: ConfigDep,
     title: Annotated[str, Form()],
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
     nugget_ids: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
-    """Create a task from the user-confirmed cluster of notes and refresh the inbox."""
+    """Create a task from a confirmed suggestion cluster and refresh the inbox."""
     ids = _bulk_nugget_ids(nugget_ids)
     error: str | None = None
     if not title.strip():
@@ -1171,11 +1186,15 @@ def inbox_create_group(
         error = "Select at least one note to create a task."
     else:
         task_organize.apply_create(
-            session, title.strip(), ids, jira_base_url=_jira_base_url(config)
+            session,
+            title.strip(),
+            ids,
+            jira_base_url=_jira_base_url(config),
+            description=description.strip() or None,
         )
-    context = _inbox_context(session, status, owner)
-    context["inbox_create_error"] = error
-    return _render(request, "_inbox_oob.html", context)
+    context = _inbox_context(session, mode, status, owner)
+    context["error"] = error
+    return _render(request, "_inbox.html", context)
 
 
 def _bulk_nugget_ids(nugget_ids: list[int] | None) -> list[int]:
@@ -1202,6 +1221,7 @@ def inbox_bulk_attach(
     nugget_ids: Annotated[list[int] | None, Form()] = None,
     task_id: Annotated[str, Form()] = "",
     title: Annotated[str, Form()] = "",
+    mode: Annotated[InboxMode, Form()] = "review",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
@@ -1222,9 +1242,9 @@ def inbox_bulk_attach(
         )
     else:
         error = "Choose a task or enter a new-task title."
-    context = _inbox_context(session, status, owner)
-    context["inbox_create_error"] = error
-    return _render(request, "_inbox_oob.html", context)
+    context = _inbox_context(session, mode, status, owner)
+    context["error"] = error
+    return _render(request, "_inbox.html", context)
 
 
 @router.post("/gui/inbox/bulk/dismiss", response_class=HTMLResponse)
@@ -1232,12 +1252,13 @@ def inbox_bulk_dismiss(
     request: Request,
     session: SessionDep,
     nugget_ids: Annotated[list[int] | None, Form()] = None,
+    mode: Annotated[InboxMode, Form()] = "review",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
         nuggets.set_nugget_status(session, nugget_id, NuggetStatus.DISMISSED)
-    return _render(request, "_inbox_oob.html", _inbox_context(session, status, owner))
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/inbox/bulk/done", response_class=HTMLResponse)
@@ -1245,12 +1266,13 @@ def inbox_bulk_done(
     request: Request,
     session: SessionDep,
     nugget_ids: Annotated[list[int] | None, Form()] = None,
+    mode: Annotated[InboxMode, Form()] = "review",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
         nuggets.set_nugget_status(session, nugget_id, NuggetStatus.ALREADY_DONE)
-    return _render(request, "_inbox_oob.html", _inbox_context(session, status, owner))
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/nuggets/{nugget_id}/attach", response_class=HTMLResponse)

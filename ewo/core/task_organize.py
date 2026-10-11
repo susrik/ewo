@@ -108,11 +108,13 @@ items found in notes with no existing task to attach to yet. Propose new
 tasks that group clearly-related unattached items together.
 
 Respond with JSON only, matching:
-{"proposals": [{"kind": "create", "nugget_ids": [int], "title": str, "reason": str}]}
+{"proposals": [{"kind": "create", "nugget_ids": [int], "title": str,
+  "description": str, "reason": str}]}
 
 - Group at least 2 related items per proposal; never invent items; use only the
   listed item ids, and put each item in at most one proposal.
-- Give each proposal a concise title. If nothing should be grouped, return an empty list.
+- Give each proposal a concise title and a one-paragraph ``description`` of the
+  work it covers (not a to-do list). If nothing should be grouped, return an empty list.
 """
 
 
@@ -122,6 +124,7 @@ class Proposal(BaseModel):
     kind: Literal["merge", "split", "create", "retitle"]
     reason: str = ""
     title: str | None = None
+    description: str | None = None
     task_id: int | None = None
     into_id: int | None = None
     from_id: int | None = None
@@ -424,6 +427,7 @@ def _validate_inbox_creates(proposals: list[Proposal], new_nuggets: list[Nugget]
         if not set(nugget_ids) <= new_ids or used & set(nugget_ids):
             continue
         proposal.title = title
+        proposal.description = (proposal.description or "").strip() or None
         proposal.nugget_ids = nugget_ids
         seen_titles.add(title)
         used.update(nugget_ids)
@@ -603,9 +607,10 @@ def apply_create(
     title: str,
     nugget_ids: list[int],
     jira_base_url: str | None = None,
+    description: str | None = None,
 ) -> Task:
     """Create a task from a cluster of unattached nuggets (they are attached)."""
-    task = tasks.create_task(session, title=title, source=TaskSource.NOTES)
+    task = tasks.create_task(session, title=title, description=description, source=TaskSource.NOTES)
     for nugget_id in nugget_ids:
         nugget = nuggets.get_nugget(session, nugget_id)
         if nugget.status == NuggetStatus.NEW:

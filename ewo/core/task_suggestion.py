@@ -25,6 +25,7 @@ def replace_suggestions(session: Session, proposals: list[Proposal]) -> list[Nug
     rows = [
         NuggetSuggestion(
             title=(p.title or "").strip(),
+            description=(p.description or "").strip() or None,
             reason=p.reason or None,
             nugget_ids=list(dict.fromkeys(p.nugget_ids)),
             sort_order=index,

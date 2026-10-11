@@ -20,8 +20,8 @@
           hx-target="#nugget-{{ nugget_id }}" hx-swap="outerHTML">
   {% elif action == 'bulk_attach' %}
   <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2 w-full"
-          hx-post="/gui/inbox/bulk/attach" hx-include=".bulk-select:checked"
-          hx-vals='{"task_id": "{{ t.id }}", "status": "{{ status }}", "owner": "{{ owner }}"}'
+          hx-post="/gui/inbox/bulk/attach" hx-include=".nugget-select:checked"
+          hx-vals='{"task_id": "{{ t.id }}", "status": "{{ status }}", "owner": "{{ owner }}", "mode": "{{ mode }}"}'
           hx-target="#inbox-list">
   {% else %}
   <button type="button" class="btn btn-xs btn-ghost justify-start font-normal gap-2 w-full"

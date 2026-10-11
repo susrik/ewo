@@ -17,7 +17,7 @@ description. A new subtask inherits its parent's tags (additive). See
 ## Nugget
 A unit of outstanding work discovered in your notes: an action, question,
 deadline, or risk, cited by `path:line`. Nuggets land in the **inbox** for
-review, pre-grouped under a suggested task. See [Inbox](inbox.md).
+review across three views. See [Inbox](inbox.md).
 
 ## Inbox
 Where unreviewed nuggets wait. For each you can **attach** to a task (existing

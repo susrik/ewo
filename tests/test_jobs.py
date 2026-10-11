@@ -345,6 +345,7 @@ def test_inbox_suggest_job_stores_suggestions(
                             "kind": "create",
                             "nugget_ids": [a.id, b.id],
                             "title": expected_title,
+                            "description": "do both bits",
                             "reason": "x",
                         }
                     ]
@@ -361,6 +362,7 @@ def test_inbox_suggest_job_stores_suggestions(
         rows = list(session.scalars(select(NuggetSuggestion)))
         assert [r.title for r in rows] == ["pair"]
         assert [r.nugget_ids for r in rows] == [[a.id, b.id]]
+        assert [r.description for r in rows] == ["do both bits"]
 
     # a new run replaces the previous suggestions rather than appending
     _run("second pairing")

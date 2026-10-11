@@ -374,6 +374,7 @@ class NuggetSuggestion(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str | None] = mapped_column(Text)
     reason: Mapped[str | None] = mapped_column(Text)
     nugget_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
