@@ -1320,6 +1320,10 @@ def test_inbox_bulk_filter_markers(client: TestClient, session: Session) -> None
     assert "bulk-select" in page.text
     assert "nugget-row" in page.text
     assert "data-search=" in page.text
+    # the filter is re-applied after htmx finishes swapping/settling so a bulk
+    # action keeps the visible list in sync with the reported filter count
+    assert "htmx:afterSwap" in page.text
+    assert "htmx:afterSettle" in page.text
     assert "/gui/inbox/bulk/dismiss" in page.text
     assert "/gui/inbox/bulk/done" in page.text
     assert "/gui/inbox/bulk/attach" in page.text

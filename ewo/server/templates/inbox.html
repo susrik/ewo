@@ -174,16 +174,23 @@
       if (e.target && e.target.classList && e.target.classList.contains("bulk-select")) updateSelection();
     });
 
-    document.body.addEventListener("htmx:afterSwap", function (e) {
+    function reapplyFilter(event) {
       if (!list) return;
-      var target = e.detail.target;
+      var target = event.detail.target;
       var inInbox =
         target === list ||
         (target && target.id && target.id.indexOf("nugget-") === 0) ||
         (target && target.contains && target.contains(list)) ||
         (target && list.contains(target));
       if (inInbox) applyFilter();
-    });
+    }
+    // Re-apply on both swap and settle: htmx's attribute settling copies the
+    // server-rendered `class` back onto id-matched rows during `htmx:afterSettle`,
+    // wiping the `hidden` class the filter toggles (so a bulk action re-renders
+    // the list unfiltered). Re-applying on `htmx:afterSettle` keeps the shown
+    // list in sync with the reported filter count.
+    document.body.addEventListener("htmx:afterSwap", reapplyFilter);
+    document.body.addEventListener("htmx:afterSettle", reapplyFilter);
 
     // Persist the suggest-panel collapse state (the panel is re-rendered on
     // swap, so delegate on the document and use capture since `toggle` does
