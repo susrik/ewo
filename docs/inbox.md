@@ -54,7 +54,12 @@ see + have selected — a hidden or other-view nugget is never touched.
   done*, *Dismiss*, and a *x of y selected* count.
 - **Suggested new tasks**: each proposal panel has its own *Select all/none*,
   *Create and Attach* (create the task and attach its selected nuggets),
-  *Already done*, *Dismiss*, and a *x of y selected* count.
+  *Already done*, *Dismiss*, and a *x of y selected* count, laid out under the
+  **Title**/**Description** boxes and above that proposal's list of nuggets.
+
+The *Already done* and *Dismiss* controls on these selection toolbars (review
+bulk bar and both suggestion panels) are pillbox-styled; the per-nugget row
+actions are not.
 
 Filtering drops a nugget from view and from the selection (so bulk/group
 actions never affect it), mirroring the rule that bulk operations only ever

@@ -27,11 +27,11 @@
       <input class="input input-bordered input-xs" name="title" placeholder="New task title…">
       <button class="btn btn-xs btn-bulk-solid" type="submit" title="Attach all selected to one new task">＋ New task</button>
     </form>
-    <button class="btn btn-xs btn-ghost btn-bulk" type="button" hx-post="/gui/inbox/bulk/done"
+    <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/bulk/done"
             hx-include=".nugget-select:checked"
             hx-vals='{"mode": "review", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
             hx-target="#inbox-list">Already done</button>
-    <button class="btn btn-xs btn-ghost btn-bulk" type="button" hx-post="/gui/inbox/bulk/dismiss"
+    <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/bulk/dismiss"
             hx-include=".nugget-select:checked"
             hx-vals='{"mode": "review", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
             hx-target="#inbox-list">Dismiss</button>
@@ -52,7 +52,7 @@
   </div>
   {% if groups %}
     {% for group in groups %}
-    <div class="mt-3 inbox-group panel-suggested rounded-box p-3" id="task-{{ group.task.id }}">
+    <div class="mt-3 inbox-group panel-suggested rounded-box p-3" id="task-{{ group.task.id }}" data-group>
       <div class="flex flex-wrap items-center gap-2">
         <input type="checkbox" class="checkbox checkbox-xs group-toggle accent-checkbox" title="Select all/none in this group" aria-label="Select all/none in this group">
         <span class="font-semibold text-sm min-w-0 break-words">#{{ group.task.id }} {{ group.task.title }}</span>
@@ -63,13 +63,13 @@
           <input type="hidden" name="owner" value="{{ filters.owner }}">
           <button class="btn btn-xs accent-btn-solid" type="submit">Attach</button>
         </form>
-        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/suggest/bulk"
+        <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/suggest/bulk"
                 hx-vals='{"action": "done", "mode": "suggested_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
                 hx-include="#task-{{ group.task.id }} .nugget-select" hx-target="#inbox-list">Already done</button>
-        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/suggest/bulk"
+        <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/suggest/bulk"
                 hx-vals='{"action": "dismiss", "mode": "suggested_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
                 hx-include="#task-{{ group.task.id }} .nugget-select" hx-target="#inbox-list">Dismiss</button>
-        <span class="text-xs opacity-60 ml-auto" data-group-count>0 of 0 selected</span>
+        <span class="text-xs opacity-60 ml-auto" data-group-count>0 of {{ group.nuggets | length }} selected</span>
       </div>
       <div class="grid gap-2 mt-2">
         {% for nugget in group.nuggets %}{% include "_nugget.html" %}{% endfor %}
@@ -94,7 +94,7 @@
   </div>
   {% if groups %}
     {% for group in groups %}
-    <div class="mt-3 inbox-group panel-new rounded-box p-3" id="suggest-{{ group.id }}">
+    <div class="mt-3 inbox-group panel-new rounded-box p-3" id="suggest-{{ group.id }}" data-group>
       <div class="flex items-center gap-2">
         <span class="badge badge-sm badge-primary">new task</span>
         <button class="btn btn-xs btn-ghost ml-auto" type="button" title="Discard this suggestion"
@@ -110,9 +110,6 @@
         <textarea class="textarea textarea-bordered textarea-sm w-full" name="description" form="suggest-form-{{ group.id }}" rows="3">{{ group.description or group.title }}</textarea>
       </div>
       {% if group.reason %}<div class="text-xs opacity-70 mt-1">— {{ group.reason }}</div>{% endif %}
-      <div class="grid gap-2 mt-2">
-        {% for nugget in group.nuggets %}{% include "_nugget.html" %}{% endfor %}
-      </div>
       <div class="flex flex-wrap items-center gap-2 mt-2">
         <input type="checkbox" class="checkbox checkbox-xs group-toggle accent-checkbox" title="Select all/none in this group" aria-label="Select all/none in this group">
         <form id="suggest-form-{{ group.id }}" hx-post="/gui/inbox/create-group" hx-target="#inbox-list"
@@ -122,13 +119,16 @@
           <input type="hidden" name="owner" value="{{ filters.owner }}">
           <button class="btn btn-xs accent-btn-solid" type="submit">Create and Attach</button>
         </form>
-        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/suggest/bulk"
+        <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/suggest/bulk"
                 hx-vals='{"action": "done", "mode": "suggested_new_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
                 hx-include="#suggest-{{ group.id }} .nugget-select" hx-target="#inbox-list">Already done</button>
-        <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/suggest/bulk"
+        <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/suggest/bulk"
                 hx-vals='{"action": "dismiss", "mode": "suggested_new_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
                 hx-include="#suggest-{{ group.id }} .nugget-select" hx-target="#inbox-list">Dismiss</button>
-        <span class="text-xs opacity-60 ml-auto" data-group-count>0 of 0 selected</span>
+        <span class="text-xs opacity-60 ml-auto" data-group-count>0 of {{ group.nuggets | length }} selected</span>
+      </div>
+      <div class="grid gap-2 mt-2">
+        {% for nugget in group.nuggets %}{% include "_nugget.html" %}{% endfor %}
       </div>
     </div>
     {% endfor %}

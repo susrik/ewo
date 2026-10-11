@@ -1336,6 +1336,43 @@ def test_inbox_bulk_filter_markers(client: TestClient, session: Session) -> None
     assert "bulk-toolbar" not in all_page.text
 
 
+def test_inbox_group_toggle_and_count_markers(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "the topic"}).json()
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    nuggets.update_nugget(session, a, suggested_task_id=task["id"])
+    nuggets.update_nugget(session, b, suggested_task_id=task["id"])
+
+    # suggested tasks: the group panel carries the hooks the client-side JS
+    # keys off (data-group) and an initial server-rendered total.
+    panel = client.get("/gui/inbox", params={"mode": "suggested_tasks"})
+    assert "data-group" in panel.text
+    assert "data-group-count" in panel.text
+    assert "0 of 2 selected" in panel.text
+    # selection-based "Already done"/"Dismiss" controls are pillbox-style
+    assert "accent-btn-outline" in panel.text
+
+    # review bulk toolbar's "Already done"/"Dismiss" are pillbox-style too
+    review = client.get("/gui/inbox", params={"mode": "review"})
+    assert "accent-btn-outline" in review.text
+
+
+def test_inbox_suggest_panel_button_order_and_count(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    _suggestion(session, "the pair", a, b)
+
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "data-group" in panel.text
+    assert "data-group-count" in panel.text
+    assert "0 of 2 selected" in panel.text
+
+    # Create and Attach now sits above the matching-nugget list, not below it
+    assert panel.text.index("Create and Attach") < panel.text.index("alpha thing")
+    # selection-based controls are pillbox-style
+    assert "accent-btn-outline" in panel.text
+
+
 def test_inbox_bulk_attach_task_search(client: TestClient, session: Session) -> None:
     client.post("/api/tasks", json={"title": "the topic"})
     _item(session)

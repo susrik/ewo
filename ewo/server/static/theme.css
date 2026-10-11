@@ -109,6 +109,22 @@
   border-color: var(--accent);
 }
 
+/* --- pillbox selection controls ---
+   "Already done"/"Dismiss" selection controls are outlined pills: a visible
+   accent border and text so they read as buttons (unlike ``btn-ghost``, which
+   is transparent and looks like bare text), fully rounded to a pill. */
+.accent-btn-outline {
+  color: var(--accent);
+  border-color: var(--accent);
+  background-color: transparent;
+  border-radius: 9999px;
+}
+.accent-btn-outline:hover {
+  background-color: var(--accent);
+  color: var(--accent-c);
+  border-color: var(--accent);
+}
+
 /* --- review-mode (purple) action buttons --- */
 .btn-bulk {
   color: var(--theme-review);
