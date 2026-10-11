@@ -48,6 +48,32 @@ The openai 3.x SDK vendors `httpx` as `httpx2`, which `respx` can't intercept.
 `OpenAILLM` accepts an `http_client` parameter; wire-format tests inject
 `httpx2.Client(transport=httpx2.MockTransport(...))` — see `tests/test_llm.py`.
 
+## Browser (Playwright) tests
+
+The `tests/browser/` suite drives the real htmx GUI in a headless Chromium,
+verifying the browser behaviour the `TestClient` suite can't observe (htmx
+fragment swaps, form submission, checkbox/bulk selection, and the SSE job-log
+stream). They are marked `browser` and **excluded from the default `pytest`
+run** (and the coverage gate) via the `addopts` in `pyproject.toml`.
+
+One-time setup (needs `uvicorn` in the dev venv, as for `python -m ewo.server`):
+
+```sh
+pip install -e ".[test-browser]"
+playwright install chromium
+```
+
+Run them explicitly:
+
+```sh
+pytest -m browser --no-cov
+```
+
+Unlike the unit suite, browser tests need network access (htmx/Tailwind/daisyUI
+load from CDNs) and bind a live uvicorn server on `127.0.0.1` over a
+file-backed SQLite (see `tests/browser/conftest.py`). They are a focused smoke
+suite — one test per core page/flow — not a mirror of `tests/test_gui.py`.
+
 ## Jobs
 
 Register jobs in `ewo/jobs/builtin.py` via the registry; every execution

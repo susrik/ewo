@@ -17,6 +17,12 @@ dev = [
     "mypy",
     "ruff",
 ]
+# Browser (Playwright) GUI tests. Kept separate from `dev` so a plain
+# `pip install -e ".[dev]"` stays light; the Playwright browsers themselves are
+# installed separately via `playwright install chromium`.
+test-browser = [
+    "playwright",
+]
 
 [project.scripts]
 ewo = "ewo.cli.main:cli"
@@ -32,7 +38,10 @@ dependencies = { file = ["requirements.txt"] }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=ewo --cov-report=term-missing --cov-fail-under=95"
+addopts = "--cov=ewo --cov-report=term-missing --cov-fail-under=95 -m 'not browser'"
+markers = [
+    "browser: browser (Playwright) GUI tests — run explicitly with `pytest -m browser --no-cov`",
+]
 
 [tool.coverage.run]
 omit = [
