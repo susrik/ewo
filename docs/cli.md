@@ -47,6 +47,7 @@ ewo whatnext [--llm]
 ewo jobs list
 ewo jobs run <name> [--full] [--timeout S] [--no-wait]
 ewo jobs runs
+ewo jobs log <run-id>      # one run's live log (model, prompt/token sizes)
 
 ewo google auth     # one-time OAuth consent; stores token in the DB
 ```

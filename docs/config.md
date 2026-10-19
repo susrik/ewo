@@ -19,6 +19,8 @@ the full, commented shape.
 | `discord` | bot `token` + `channel_id` restriction |
 | `reports_repo` | dedicated GitHub repo for markdown reports |
 | `jobs.schedules` | job name → 5-field cron expression ("" disables). On demand: `ewo jobs run <name>` |
+| `jobs.log_retention_days` | days to keep per-run job logs before housekeeping prunes them (default 30; `0` = forever) |
+| `jobs.log_prompt_preview_chars` | cap on the truncated prompt preview stored with each LLM log entry (default 600) |
 | `mcp` | HTTP transport toggle + port |
 | `notes` | read-only markdown notes tree: `root`, `people_dir`, `exclude`, `window_days`, `max_file_chars` |
 | `nugget` | defaults for the task created when attaching a nugget to a new task (`default_priority`, `default_assignee_self`) |

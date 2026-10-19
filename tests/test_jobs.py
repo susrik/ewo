@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,9 +13,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import ewo.jobs.builtin  # noqa: F401 - registers builtins
 from ewo.config import Config
-from ewo.core import tasks
+from ewo.core import nuggets, tasks
 from ewo.core.llm import FakeLLM
-from ewo.db.models import JobRun, JobRunStatus, Report
+from ewo.db.models import (
+    JobLogEntry,
+    JobRun,
+    JobRunStatus,
+    NuggetKind,
+    NuggetSuggestion,
+    Report,
+)
 from ewo.jobs.registry import (
     JobContext,
     JobRegistry,
@@ -296,3 +305,99 @@ def test_build_scheduler(
     scheduler = build_scheduler(config, registry, session_factory, fake_llm)
     job_ids = [job.id for job in scheduler.get_jobs()]
     assert job_ids == ["daily_report"]
+
+
+def _log_entries(session_factory: sessionmaker[Session], run_id: int) -> list[JobLogEntry]:
+    with session_factory() as session:
+        return list(
+            session.scalars(
+                select(JobLogEntry).where(JobLogEntry.run_id == run_id).order_by(JobLogEntry.id)
+            )
+        )
+
+
+def test_job_log_records_start_finish_and_llm(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM
+) -> None:
+    config.llm.api_key = "sk"
+    run = registry.run("nuggets_match", session_factory, config, fake_llm)
+    assert run.status == JobRunStatus.SUCCESS
+    entries = _log_entries(session_factory, run.id)
+    kinds = [e.kind for e in entries]
+    assert kinds[0] == "step" and kinds[-1] == "step"  # started / done
+    assert "job 'nuggets_match' started" in entries[0].message
+
+
+def test_inbox_suggest_job_stores_suggestions(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM, session: Session
+) -> None:
+    a, _ = nuggets.upsert_nugget(session, "ai/a.md", 1, "alpha", NuggetKind.ACTION)
+    b, _ = nuggets.upsert_nugget(session, "ai/b.md", 2, "beta", NuggetKind.ACTION)
+    session.commit()
+    config.llm.api_key = "sk"
+
+    def _run(expected_title: str) -> JobRun:
+        fake_llm.responses = [
+            json.dumps(
+                {
+                    "proposals": [
+                        {
+                            "kind": "create",
+                            "nugget_ids": [a.id, b.id],
+                            "title": expected_title,
+                            "description": "do both bits",
+                            "reason": "x",
+                        }
+                    ]
+                }
+            )
+        ]
+        run = registry.run("inbox_suggest", session_factory, config, fake_llm)
+        assert run.status == JobRunStatus.SUCCESS
+        assert run.result == "proposals=1 tokens=10"
+        return run
+
+    run = _run("pair")
+    with session_factory() as session:
+        rows = list(session.scalars(select(NuggetSuggestion)))
+        assert [r.title for r in rows] == ["pair"]
+        assert [r.nugget_ids for r in rows] == [[a.id, b.id]]
+        assert [r.description for r in rows] == ["do both bits"]
+
+    # a new run replaces the previous suggestions rather than appending
+    _run("second pairing")
+    with session_factory() as session:
+        rows = list(session.scalars(select(NuggetSuggestion)))
+        assert [r.title for r in rows] == ["second pairing"]
+
+    # the LLM call is logged with tier/model/prompt sizes and the reply's tokens
+    entries = _log_entries(session_factory, run.id)
+    wait = next(e for e in entries if e.kind == "wait")
+    assert wait.meta["tier"] == "smart" and wait.meta["model"] == "gpt-4o"
+    assert wait.meta["prompt_chars"] > 0
+    reply = next(e for e in entries if e.kind == "llm")
+    assert reply.meta["tokens"] == 10
+
+
+def test_housekeeping_prunes_expired_job_logs(
+    session_factory: sessionmaker[Session], config: Config, fake_llm: FakeLLM
+) -> None:
+    with session_factory() as session:
+        run = JobRun(job_name="old")
+        session.add(run)
+        session.commit()
+        run_id = run.id
+        session.add(
+            JobLogEntry(
+                run_id=run_id,
+                kind="step",
+                message="old",
+                created_at=datetime.now() - timedelta(days=40),
+            )
+        )
+        session.commit()
+
+    run = registry.run("housekeeping", session_factory, config, fake_llm)
+    assert run.status == JobRunStatus.SUCCESS
+    assert "pruned_logs=1" in str(run.result)
+    assert _log_entries(session_factory, run_id) == []

@@ -8,6 +8,7 @@ stateless); that keeps the schema simple.
 
 from __future__ import annotations
 
+from time import perf_counter, sleep
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -15,7 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ewo.core import nuggets, tasks
-from ewo.core.llm import LLMClient
+from ewo.core.job_log import JobLog
+from ewo.core.llm import LLMClient, backoff, is_retryable
 from ewo.core.people import NotFoundError
 from ewo.db.models import Nugget, NuggetStatus, Task, TaskSource, TaskStatus
 
@@ -23,6 +25,9 @@ _MAX_PROPOSALS = 10
 _MAX_GROUP_TASKS = 20
 _MAX_SPLIT_PARTS = 8
 _MAX_RELATED_QUESTIONS = 3
+_INBOX_MAX_ITEMS = 200  # cap on NEW nuggets considered per inbox_suggest run
+_INBOX_CHUNK = 50  # nuggets per LLM call when proposing inbox creates
+_JSON_ATTEMPTS = 4  # LLM calls per parse before giving up (incl. the JSON retry)
 
 _SYSTEM = """You tidy an engineering manager's task list. Tasks collect "nuggets" (work items
 extracted from notes). Propose only clearly useful changes, at most 10, fewest possible:
@@ -103,11 +108,13 @@ items found in notes with no existing task to attach to yet. Propose new
 tasks that group clearly-related unattached items together.
 
 Respond with JSON only, matching:
-{"proposals": [{"kind": "create", "nugget_ids": [int], "title": str, "reason": str}]}
+{"proposals": [{"kind": "create", "nugget_ids": [int], "title": str,
+  "description": str, "reason": str}]}
 
 - Group at least 2 related items per proposal; never invent items; use only the
   listed item ids, and put each item in at most one proposal.
-- Give each proposal a concise title. If nothing should be grouped, return an empty list.
+- Give each proposal a concise title and a one-paragraph ``description`` of the
+  work it covers (not a to-do list). If nothing should be grouped, return an empty list.
 """
 
 
@@ -117,6 +124,7 @@ class Proposal(BaseModel):
     kind: Literal["merge", "split", "create", "retitle"]
     reason: str = ""
     title: str | None = None
+    description: str | None = None
     task_id: int | None = None
     into_id: int | None = None
     from_id: int | None = None
@@ -173,24 +181,49 @@ def _strip_fence(text: str) -> str:
     return stripped.strip()
 
 
+def _validation_detail(exc: ValidationError) -> str:
+    """A compact but informative pydantic error (field + message, not just the top line)."""
+    text = str(exc).strip()
+    return text if len(text) <= 400 else text[:400] + "…"
+
+
 def _parse_llm_json[T: BaseModel](
-    llm: LLMClient, prompt: str, system: str, model: type[T], what: str
+    llm: LLMClient, prompt: str, system: str, model: type[T], what: str, log: JobLog | None = None
 ) -> tuple[T, int]:
-    """One smart-tier LLM call plus one retry; the reply must parse as *model*."""
+    """One smart-tier LLM call, retrying on invalid JSON and transient errors."""
     tokens = 0
     last_error = ""
-    for attempt in range(2):
+    for attempt in range(_JSON_ATTEMPTS):
         request = prompt
-        if attempt:
+        if attempt and last_error:
             request += (
                 f"\n\nYour previous reply was not valid JSON ({last_error}). Reply with JSON only."
             )
-        result = llm.complete(request, system=system, smart=True)
+        if log is not None:
+            log.llm_call(True, request, system=system, retry=bool(attempt))
+        started = perf_counter()
+        try:
+            result = llm.complete(request, system=system, smart=True)
+        except Exception as exc:
+            if is_retryable(exc) and attempt < _JSON_ATTEMPTS - 1:
+                if log is not None:
+                    log.error(f"transient LLM error, retrying: {str(exc).splitlines()[0]}")
+                sleep(backoff(attempt))
+                continue
+            if is_retryable(exc):
+                raise ValueError(
+                    f"LLM request failed after {_JSON_ATTEMPTS} attempts: "
+                    f"{str(exc).splitlines()[0]}"
+                ) from exc
+            raise
+        elapsed_ms = (perf_counter() - started) * 1000.0
         tokens += result.tokens_used
+        if log is not None:
+            log.llm_reply(True, result.tokens_used, elapsed_ms=elapsed_ms, retry=bool(attempt))
         try:
             return model.model_validate_json(_strip_fence(result.text)), tokens
         except ValidationError as exc:
-            last_error = str(exc).splitlines()[0]
+            last_error = _validation_detail(exc)
     raise ValueError(f"LLM did not return valid {what}: {last_error}")
 
 
@@ -322,22 +355,59 @@ def propose_description(session: Session, llm: LLMClient, task_id: int) -> tuple
     return description, tokens
 
 
-def propose_inbox_creates(session: Session, llm: LLMClient) -> tuple[list[Proposal], int]:
+def propose_inbox_creates(
+    session: Session, llm: LLMClient, log: JobLog | None = None
+) -> tuple[list[Proposal], int]:
     """Propose new tasks that group clearly-related unattached inbox nuggets.
 
-    One smart-tier LLM call (+ one retry). Returns (proposals, tokens); each
-    proposal clusters ≥2 NEW nuggets under a new-task title. Nothing is
-    persisted — the GUI applies only the nuggets the user selects.
+    Considers the ``_INBOX_MAX_ITEMS`` most recently seen NEW nuggets, ordered
+    by ``(path, line)`` so items from the same note co-locate, and matches them
+    in bounded ``_INBOX_CHUNK`` batches. A chunk whose reply can't be parsed is
+    skipped (and logged) rather than failing the run. Returns (proposals,
+    tokens); each kept proposal clusters ≥2 NEW nuggets under a new-task title.
+    Nothing is persisted — the GUI applies only the nuggets the user selects.
     """
-    new_nuggets = list(session.scalars(select(Nugget).where(Nugget.status == NuggetStatus.NEW)))
+    new_nuggets = list(
+        session.scalars(
+            select(Nugget)
+            .where(Nugget.status == NuggetStatus.NEW)
+            .order_by(Nugget.last_seen_at.desc())
+            .limit(_INBOX_MAX_ITEMS)
+        )
+    )
     if not new_nuggets:
         return [], 0
-    nugget_lines = "\n".join(f"- #{n.id} {n.summary}" for n in new_nuggets) or "- (none)"
-    prompt = f"Unattached inbox items:\n{nugget_lines}"
-    parsed, tokens = _parse_llm_json(
-        llm, prompt, _INBOX_CREATE_SYSTEM, _CreateProposals, "inbox create proposals"
-    )
-    return _validate_inbox_creates(parsed.proposals, new_nuggets), tokens
+    # co-locate items from the same note so each chunk holds related work
+    new_nuggets.sort(key=lambda n: (n.path or "", n.line))
+    if log is not None:
+        log.step(f"proposing tasks for {len(new_nuggets)} unmatched nuggets")
+    proposals: list[Proposal] = []
+    tokens = 0
+    for start in range(0, len(new_nuggets), _INBOX_CHUNK):
+        chunk = new_nuggets[start : start + _INBOX_CHUNK]
+        if log is not None:
+            log.step(
+                f"proposing chunk {start // _INBOX_CHUNK + 1}/"
+                f"{(len(new_nuggets) - 1) // _INBOX_CHUNK + 1}: {len(chunk)} items"
+            )
+        nugget_lines = "\n".join(f"- #{n.id} {n.summary}" for n in chunk) or "- (none)"
+        prompt = f"Unattached inbox items:\n{nugget_lines}"
+        try:
+            parsed, chunk_tokens = _parse_llm_json(
+                llm,
+                prompt,
+                _INBOX_CREATE_SYSTEM,
+                _CreateProposals,
+                "inbox create proposals",
+                log=log,
+            )
+        except ValueError as exc:
+            if log is not None:
+                log.error(str(exc))
+            continue
+        tokens += chunk_tokens
+        proposals.extend(parsed.proposals)
+    return _validate_inbox_creates(proposals, new_nuggets), tokens
 
 
 def _validate_inbox_creates(proposals: list[Proposal], new_nuggets: list[Nugget]) -> list[Proposal]:
@@ -357,6 +427,7 @@ def _validate_inbox_creates(proposals: list[Proposal], new_nuggets: list[Nugget]
         if not set(nugget_ids) <= new_ids or used & set(nugget_ids):
             continue
         proposal.title = title
+        proposal.description = (proposal.description or "").strip() or None
         proposal.nugget_ids = nugget_ids
         seen_titles.add(title)
         used.update(nugget_ids)
@@ -536,9 +607,10 @@ def apply_create(
     title: str,
     nugget_ids: list[int],
     jira_base_url: str | None = None,
+    description: str | None = None,
 ) -> Task:
     """Create a task from a cluster of unattached nuggets (they are attached)."""
-    task = tasks.create_task(session, title=title, source=TaskSource.NOTES)
+    task = tasks.create_task(session, title=title, description=description, source=TaskSource.NOTES)
     for nugget_id in nugget_ids:
         nugget = nuggets.get_nugget(session, nugget_id)
         if nugget.status == NuggetStatus.NEW:

@@ -234,6 +234,16 @@ class JobRunOut(ORMModel):
     result: str | None
     error: str | None
     tokens_used: int
+    payload: dict[str, object] | None = None
+    log_count: int = 0
+
+
+class JobLogEntryOut(BaseModel):
+    id: int
+    kind: str
+    message: str
+    meta: dict[str, object]
+    created_at: datetime
 
 
 class JobListOut(BaseModel):

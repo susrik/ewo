@@ -15,12 +15,14 @@ human confirms in the inbox.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import perf_counter, sleep
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ewo.core.llm import LLMClient
+from ewo.core.job_log import JobLog
+from ewo.core.llm import LLMClient, backoff, is_retryable
 from ewo.core.nuggets import norm_words
 from ewo.db.models import Nugget, NuggetStatus, Task, TaskStatus
 
@@ -29,6 +31,8 @@ _MAX_TASKS = 150
 _MAX_ATTACHED = 3  # attached summaries shown per task in the prompt
 _ATTACHED_CHARS = 80  # max chars per attached summary
 _JACCARD_MIN = 0.6  # word-set overlap needed for a deterministic suggestion
+_ATTEMPTS = 4  # LLM calls per chunk before giving up (incl. a JSON retry)
+
 
 _SYSTEM = """You match inbox items extracted from an engineering manager's notes to their
 existing tracked tasks. For each item decide which single task it is an update for or a
@@ -165,6 +169,7 @@ def _match_chunk(
     candidates: list[Nugget],
     tasks: list[Task],
     attached: dict[int, list[str]],
+    log: JobLog | None = None,
 ) -> tuple[_MatchResult, int]:
     """One LLM call (plus one retry on invalid JSON). Returns (result, tokens)."""
     task_lines = (
@@ -176,71 +181,114 @@ def _match_chunk(
     )
     prompt = f"Open tasks:\n{task_lines}\n\nInbox items:\n{item_lines}"
     tokens = 0
-    last_error = ""
-    for attempt in range(2):
+    last_json_error = ""
+    for attempt in range(_ATTEMPTS):
         request = prompt
-        if attempt:
+        if attempt and last_json_error:
             request += (
-                f"\n\nYour previous reply was not valid JSON ({last_error}). Reply with JSON only."
+                f"\n\nYour previous reply was not valid JSON ({last_json_error}). "
+                "Reply with JSON only."
             )
-        result = llm.complete(request, system=_SYSTEM, smart=False)
+        if log is not None:
+            log.llm_call(True, request, system=_SYSTEM, retry=bool(attempt))
+        started = perf_counter()
+        try:
+            result = llm.complete(request, system=_SYSTEM, smart=True)
+        except Exception as exc:
+            if is_retryable(exc) and attempt < _ATTEMPTS - 1:
+                if log is not None:
+                    log.error(f"transient LLM error, retrying: {str(exc).splitlines()[0]}")
+                sleep(backoff(attempt))
+                continue
+            if is_retryable(exc):
+                raise ValueError(
+                    f"LLM request failed after {_ATTEMPTS} attempts: {str(exc).splitlines()[0]}"
+                ) from exc
+            raise
+        elapsed_ms = (perf_counter() - started) * 1000.0
         tokens += result.tokens_used
+        if log is not None:
+            log.llm_reply(True, result.tokens_used, elapsed_ms=elapsed_ms, retry=bool(attempt))
         try:
             return _MatchResult.model_validate_json(_strip_fence(result.text)), tokens
         except ValidationError as exc:
-            last_error = str(exc).splitlines()[0]
-    raise ValueError(f"LLM did not return valid matches: {last_error}")
+            last_json_error = str(exc).splitlines()[0]
+    raise ValueError(f"LLM did not return valid matches: {last_json_error}")
 
 
 def suggest_matches(
     session: Session,
     llm: LLMClient,
     nugget_ids: list[int] | None = None,
+    log: JobLog | None = None,
 ) -> SuggestSummary:
-    """Compute suggested tasks for NEW nuggets; store them on the nuggets."""
+    """Compute suggested tasks for NEW nuggets; store them on the nuggets.
+
+    Only nuggets without a suggestion yet are considered, so repeat runs are
+    incremental. Suggestions are committed as they are computed (deterministic
+    pass, then per chunk) so a mid-run failure keeps everything already decided.
+    """
     summary = SuggestSummary()
-    query = select(Nugget).where(Nugget.status == NuggetStatus.NEW).order_by(Nugget.id)
+    query = (
+        select(Nugget)
+        .where(Nugget.status == NuggetStatus.NEW, Nugget.suggested_task_id.is_(None))
+        .order_by(Nugget.id)
+    )
     if nugget_ids is not None:
         query = query.where(Nugget.id.in_(nugget_ids))
     candidates = list(session.scalars(query))
     if not candidates:
         return summary
+    by_id = {nugget.id: nugget for nugget in candidates}
     summary.reviewed = len(candidates)
+    if log is not None:
+        log.step(f"reviewing {len(candidates)} new nuggets")
 
     # deterministic pass: duplicates of already-attached nuggets
     deterministic = _suggest_from_attached(session, candidates)
+    for nugget in candidates:
+        task_id = deterministic.get(nugget.id)
+        if task_id is not None:
+            nugget.suggested_task_id = task_id
+            summary.suggested += 1
+    session.commit()
+    if log is not None:
+        log.info(f"{len(deterministic)} reused from earlier attach decisions")
+
     remaining = [n for n in candidates if n.id not in deterministic]
 
     # LLM pass over the rest, in chunks
     tasks = _open_tasks(session)
-    llm_suggestions: dict[int, int | None] = {}
     if tasks:
         attached = _attached_summaries(session, tasks)
+        task_ids = {task.id for task in tasks}
         for start in range(0, len(remaining), _CHUNK):
             chunk = remaining[start : start + _CHUNK]
+            chunk_ids = {n.id for n in chunk}
+            if log is not None:
+                log.step(
+                    f"matching chunk {start // _CHUNK + 1}/{(len(remaining) - 1) // _CHUNK + 1}: "
+                    f"{len(chunk)} items against {len(tasks)} tasks"
+                )
             try:
-                result, tokens = _match_chunk(llm, chunk, tasks, attached)
+                result, tokens = _match_chunk(llm, chunk, tasks, attached, log=log)
             except ValueError as exc:
                 summary.errors.append(str(exc))
+                if log is not None:
+                    log.error(str(exc))
                 continue
             summary.tokens += tokens
-            task_ids = {task.id for task in tasks}
             matched_items: set[int] = set()
             for match in result.matches:
-                if match.item in matched_items or match.item not in {n.id for n in chunk}:
+                if match.item in matched_items or match.item not in chunk_ids:
                     continue
                 matched_items.add(match.item)
-                llm_suggestions[match.item] = match.task if match.task in task_ids else None
-
-    for nugget in candidates:
-        if nugget.id in deterministic:
-            nugget.suggested_task_id = deterministic[nugget.id]
-            summary.suggested += 1
-        elif nugget.id in llm_suggestions:
-            nugget.suggested_task_id = llm_suggestions[nugget.id]
-            if llm_suggestions[nugget.id] is None:
-                summary.no_match += 1
-            else:
-                summary.suggested += 1
-    session.commit()
+                nugget = by_id[match.item]
+                if match.task in task_ids:
+                    nugget.suggested_task_id = match.task
+                    summary.suggested += 1
+                else:
+                    nugget.suggested_task_id = None
+                    summary.no_match += 1
+            session.commit()
     return summary

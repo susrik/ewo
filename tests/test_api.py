@@ -404,3 +404,22 @@ def test_run_job_no_wait(client: TestClient) -> None:
     assert status == "success"
 
     assert client.post("/api/jobs/nope/run", params={"wait": "false"}).status_code == 404
+
+
+def test_job_log_api(client: TestClient) -> None:
+    """The persisted per-run log is readable and clearable over the API."""
+    run = client.post("/api/jobs/what_next/run").json()
+    run_id = run["id"]
+    assert run["log_count"] >= 2  # started + done steps
+
+    entries = client.get(f"/api/jobs/runs/{run_id}/log").json()
+    assert entries, "the run should have recorded log entries"
+    assert entries[0]["kind"] == "step" and "started" in entries[0]["message"]
+
+    assert client.get("/api/jobs/runs/999999/log").status_code == 404
+
+    cleared = client.delete(f"/api/jobs/runs/{run_id}/log")
+    assert cleared.status_code == 200
+    assert client.get(f"/api/jobs/runs/{run_id}/log").json() == []
+
+    assert client.delete("/api/jobs/logs").status_code == 200

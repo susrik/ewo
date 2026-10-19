@@ -62,7 +62,10 @@ in `ewo/server/schemas.py`.
 | GET | `/api/reports/{id}` | report detail |
 | GET | `/api/jobs` | list registered jobs |
 | POST | `/api/jobs/{name}/run` | run a job (`full`, `wait` query params) |
-| GET | `/api/jobs/runs` | recent job runs |
+| GET | `/api/jobs/runs` | recent job runs (`log_count` on each) |
+| GET | `/api/jobs/runs/{id}/log` | one run's log entries |
+| DELETE | `/api/jobs/runs/{id}/log` | clear one run's log |
+| DELETE | `/api/jobs/logs` | clear all job logs |
 
 ## `/gui` endpoints
 
@@ -76,6 +79,8 @@ the `_*.html` templates htmx swaps in. Notable groups:
   `split/apply`.
 - `/gui/inbox*`, `/gui/nuggets/{id}/*` — inbox review and nugget actions.
 - `/gui/people*`, `/gui/labels*`, `/gui/one-on-ones`, `/gui/jobs/*`.
+- `/gui/jobs/{id}/events` — SSE stream replaying then live-tailing a run's log
+  (see [Jobs](jobs.md#live-logs)).
 
 Behavior details live in [Architecture](architecture.md) and the per-topic
 guides; this file is the route reference.

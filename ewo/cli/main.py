@@ -374,9 +374,38 @@ def jobs_runs(config: Config) -> None:
         response.raise_for_status()
         for run in response.json():
             result = f" {run['result']}" if run.get("result") else ""
+            log = f" log={run['log_count']}" if run.get("log_count") else ""
             click.echo(
                 f"#{run['id']} {run['job_name']} {run['status']} "
-                f"started={run['started_at']} tokens={run['tokens_used']}{result}"
+                f"started={run['started_at']} tokens={run['tokens_used']}{result}{log}"
+            )
+
+
+@jobs.command("log")
+@click.argument("run_id", type=int)
+@config_option
+def jobs_log(run_id: int, config: Config) -> None:
+    """Show one run's live log."""
+    with _client(config) as client:
+        response = client.get(f"/api/jobs/runs/{run_id}/log")
+        response.raise_for_status()
+        entries = response.json()
+        if not entries:
+            click.echo("(no log entries)")
+            return
+        for entry in entries:
+            model = entry["meta"].get("model")
+            model_badge = f" [{model}]" if model else ""
+            prompt_chars = entry["meta"].get("prompt_chars")
+            tokens = entry["meta"].get("tokens")
+            detail = ""
+            if prompt_chars is not None:
+                detail += f" prompt={prompt_chars}ch"
+            if tokens is not None:
+                detail += f" tokens={tokens}"
+            click.echo(
+                f"{entry['created_at'][11:19]} {entry['kind']:5} {entry['message']}"
+                f"{model_badge}{detail}"
             )
 
 

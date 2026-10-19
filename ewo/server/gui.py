@@ -7,18 +7,28 @@ swapped in by htmx; every mutation re-renders the fragment it belongs to.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ewo.config import Config
-from ewo.core import colors, nuggets, one_on_ones, people, preferences, task_organize, tasks
+from ewo.core import (
+    colors,
+    nuggets,
+    one_on_ones,
+    people,
+    preferences,
+    task_organize,
+    task_suggestion,
+    tasks,
+)
 from ewo.core import tags as tags_core
 from ewo.core.dashboard import build_dashboard
 from ewo.core.llm import LLMClient
@@ -26,7 +36,9 @@ from ewo.core.notes import NotesReader
 from ewo.core.people import NotFoundError
 from ewo.core.whatnext import upcoming_deadlines, what_next
 from ewo.db.models import (
+    JobLogEntry,
     JobRun,
+    JobRunStatus,
     Nugget,
     NuggetKind,
     NuggetStatus,
@@ -588,9 +600,12 @@ def task_search(
     session: SessionDep,
     config: ConfigDep,
     q: str = "",
-    action: Literal["parent", "child", "merge", "attach", "move"] = "parent",
+    action: Literal["parent", "child", "merge", "attach", "move", "bulk_attach"] = "parent",
     task_id: str = "",
     nugget_id: str = "",
+    status: str = "new",
+    owner: str = "",
+    mode: str = "review",
 ) -> HTMLResponse:
     """Substring search over open task titles, rendered as selectable rows.
 
@@ -627,6 +642,9 @@ def task_search(
             "task_id": tid or "",
             "nugget_id": nid or "",
             "max_visible": max(1, config.gui.task_picker_max_visible),
+            "status": status,
+            "owner": owner,
+            "mode": mode,
         },
     )
 
@@ -916,36 +934,68 @@ def task_delete_link(
 
 # --- inbox (nuggets) ---
 
+InboxMode = Literal["review", "suggested_tasks", "suggested_new_tasks"]
 
-def _inbox_context(session: Session, status: str = "new", owner: str = "") -> dict[str, object]:
-    parsed = None if status == "all" else NuggetStatus(status)
-    items = nuggets.list_nuggets(session, status=parsed, owner_id=_opt_int(owner))
-    open_tasks = tasks.list_tasks(session)
-    open_by_id = {task.id: task for task in open_tasks}
-    groups: list[dict[str, object]] = []
-    if parsed == NuggetStatus.NEW:
-        # pre-organized: one group per suggested task, then everything else
-        suggested: dict[int, list[Nugget]] = {}
-        rest: list[Nugget] = []
+
+def _inbox_groups(
+    items: list[Nugget], open_by_id: dict[int, Task], mode: InboxMode
+) -> list[dict[str, object]]:
+    """The nugget list shaped for each inbox mode.
+
+    ``review`` is a single flat list. ``suggested_tasks`` groups items by their
+    ``suggested_task_id`` (non-new items no longer carry one, so this is
+    naturally new-only). ``suggested_new_tasks`` is handled separately via
+    ``_suggested_new_groups``.
+    """
+    if mode == "suggested_tasks":
+        by_task: dict[int, list[Nugget]] = {}
         for item in items:
             if item.suggested_task_id is not None and item.suggested_task_id in open_by_id:
-                suggested.setdefault(item.suggested_task_id, []).append(item)
-            else:
-                rest.append(item)
-        for task_id, group_items in sorted(
-            suggested.items(), key=lambda kv: open_by_id[kv[0]].title.lower()
-        ):
-            groups.append({"kind": "task", "task": open_by_id[task_id], "nuggets": group_items})
-        if rest:
-            groups.append({"kind": "new", "nuggets": rest})
-    else:
-        by_path: dict[str, list[Nugget]] = {}
-        for item in items:
-            by_path.setdefault(item.path, []).append(item)
-        groups = [
-            {"kind": "path", "path": path, "nuggets": group} for path, group in by_path.items()
+                by_task.setdefault(item.suggested_task_id, []).append(item)
+        return [
+            {"kind": "task", "task": open_by_id[tid], "nuggets": group}
+            for tid, group in sorted(
+                by_task.items(), key=lambda kv: open_by_id[kv[0]].title.lower()
+            )
         ]
+    return [{"kind": "all", "nuggets": items}] if items else []
+
+
+def _suggested_new_groups(session: Session, owner_id: int | None = None) -> list[dict[str, object]]:
+    """Each stored ``NuggetSuggestion`` resolved to its still-NEW nuggets."""
+    groups: list[dict[str, object]] = []
+    for suggestion in task_suggestion.list_suggestions(session):
+        remaining = task_suggestion.remaining_nuggets(session, suggestion)
+        if owner_id is not None:
+            remaining = [n for n in remaining if n.owner_id == owner_id]
+        if remaining:
+            groups.append(
+                {
+                    "kind": "suggestion",
+                    "id": suggestion.id,
+                    "title": (suggestion.title or "")[:500],
+                    "description": suggestion.description or "",
+                    "reason": suggestion.reason or "",
+                    "nuggets": remaining,
+                }
+            )
+    return groups
+
+
+def _inbox_context(
+    session: Session, mode: InboxMode = "review", status: str = "new", owner: str = ""
+) -> dict[str, object]:
+    parsed = None if status == "all" else NuggetStatus(status)
+    owner_id = _opt_int(owner)
+    items = nuggets.list_nuggets(session, status=parsed, owner_id=owner_id)
+    open_tasks = tasks.list_tasks(session)
+    groups = (
+        _suggested_new_groups(session, owner_id)
+        if mode == "suggested_new_tasks"
+        else _inbox_groups(items, {task.id: task for task in open_tasks}, mode)
+    )
     return {
+        "mode": mode,
         "groups": groups,
         "count": len(items),
         "filters": {"status": status, "owner": owner},
@@ -961,10 +1011,11 @@ def inbox_page(
     request: Request,
     session: SessionDep,
     config: ConfigDep,
+    mode: InboxMode = "review",
     status: str = "new",
     owner: str = "",
 ) -> HTMLResponse:
-    context = _inbox_context(session, status, owner)
+    context = _inbox_context(session, mode, status, owner)
     context["page"] = "inbox"
     context["notes_enabled"] = config.notes.enabled
     context["llm_enabled"] = bool(config.llm.api_key)
@@ -979,9 +1030,13 @@ def inbox_page(
 
 @router.get("/gui/inbox", response_class=HTMLResponse)
 def inbox_list(
-    request: Request, session: SessionDep, status: str = "new", owner: str = ""
+    request: Request,
+    session: SessionDep,
+    mode: InboxMode = "review",
+    status: str = "new",
+    owner: str = "",
 ) -> HTMLResponse:
-    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/inbox/suggest", response_class=HTMLResponse)
@@ -991,12 +1046,19 @@ def inbox_suggest(
     session_factory: Annotated[sessionmaker[Session], Depends(get_session_factory)],
     config: ConfigDep,
     llm: Annotated[LLMClient, Depends(get_llm)],
-    session: SessionDep,
+    mode: Annotated[InboxMode, Form()] = "suggested_tasks",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    registry.run("nuggets_match", session_factory, config, llm)
-    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+    try:
+        run_id = registry.run_async("nuggets_match", session_factory, config, llm)
+    except Exception as exc:
+        return _render(request, "_job_log_error.html", {"error": str(exc)})
+    with session_factory() as session:
+        context = _log_view_context(session, run_id)
+    context["refresh_url"] = f"/gui/inbox?mode={mode}&status={status}&owner={owner}"
+    context["refresh_target"] = "#inbox-list"
+    return _render(request, "_job_log_view.html", context)
 
 
 @router.post("/gui/inbox/attach-group", response_class=HTMLResponse)
@@ -1005,43 +1067,102 @@ def inbox_attach_group(
     session: SessionDep,
     config: ConfigDep,
     task_id: Annotated[int, Form()],
+    mode: Annotated[InboxMode, Form()] = "suggested_tasks",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
-    selected: Annotated[str, Form()] = "",
     nugget_ids: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
-    """Attach the selected nuggets suggested for *task_id* (all when none chosen)."""
-    items = nuggets.list_nuggets(session, status=NuggetStatus.NEW, owner_id=_opt_int(owner))
-    chosen = set(nugget_ids or []) if selected else None
-    for item in items:
-        if item.suggested_task_id == task_id and (chosen is None or item.id in chosen):
+    """Attach the selected nuggets in a suggested-task group to that task."""
+    error: str | None = None
+    ids = _bulk_nugget_ids(nugget_ids)
+    if not ids:
+        error = "Select at least one note to attach."
+    for nugget_id in _reviewable_nugget_ids(session, ids):
+        item = nuggets.get_nugget(session, nugget_id)
+        if item.suggested_task_id == task_id:
             nuggets.attach_nugget(
-                session, item.id, task_id=task_id, jira_base_url=_jira_base_url(config)
+                session, nugget_id, task_id=task_id, jira_base_url=_jira_base_url(config)
             )
-    return _render(request, "_inbox.html", _inbox_context(session, status, owner))
+    context = _inbox_context(session, mode, status, owner)
+    context["error"] = error
+    return _render(request, "_inbox.html", context)
 
 
 @router.post("/gui/inbox/suggest-creates", response_class=HTMLResponse)
 def inbox_suggest_creates(
     request: Request,
-    session: SessionDep,
+    registry: Annotated[JobRegistry, Depends(get_registry)],
+    session_factory: Annotated[sessionmaker[Session], Depends(get_session_factory)],
     config: ConfigDep,
     llm: Annotated[LLMClient, Depends(get_llm)],
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    """AI proposes new tasks that group clusters of unmapped notes; nothing is
-    persisted until the user picks notes and confirms."""
-    context: dict[str, object] = {"proposals": [], "nuggets_by_id": {}, "error": None}
+    """AI proposes new tasks that group clusters of unmapped notes.
+
+    Runs as the ``inbox_suggest`` job so the proposal generation is streamed as
+    a live log; the job stores the proposals as ``NuggetSuggestion`` rows the
+    suggested-new-tasks tab renders until they are consumed or dismissed.
+    Nothing is attached until the user picks notes and confirms."""
     if not config.llm.api_key:
+        with session_factory() as session:
+            context = _inbox_context(session, mode, status, owner)
         context["error"] = "No LLM API key configured."
-    else:
-        try:
-            proposals, _tokens = task_organize.propose_inbox_creates(session, llm)
-            new_nuggets = nuggets.list_nuggets(session, status=NuggetStatus.NEW)
-            context["proposals"] = proposals
-            context["nuggets_by_id"] = {n.id: n for n in new_nuggets}
-        except ValueError as exc:
-            context["error"] = str(exc)
-    return _render(request, "_inbox_create.html", context)
+        return _render(request, "_inbox.html", context)
+    try:
+        run_id = registry.run_async("inbox_suggest", session_factory, config, llm)
+    except Exception as exc:
+        return _render(request, "_job_log_error.html", {"error": str(exc)})
+    with session_factory() as session:
+        context = _log_view_context(session, run_id)
+    context["refresh_url"] = f"/gui/inbox?mode={mode}&status={status}&owner={owner}"
+    context["refresh_target"] = "#inbox-list"
+    return _render(request, "_job_log_view.html", context)
+
+
+@router.post("/gui/inbox/suggest/clear", response_class=HTMLResponse)
+def inbox_suggest_clear(
+    request: Request,
+    session: SessionDep,
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Drop all stored new-task suggestions."""
+    task_suggestion.clear_suggestions(session)
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
+
+
+@router.post("/gui/inbox/suggest/{suggestion_id}/delete", response_class=HTMLResponse)
+def inbox_suggest_delete(
+    request: Request,
+    suggestion_id: int,
+    session: SessionDep,
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Remove a single stored suggestion without touching its nuggets."""
+    task_suggestion.delete_suggestion(session, suggestion_id)
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
+
+
+@router.post("/gui/inbox/suggest/bulk", response_class=HTMLResponse)
+def inbox_suggest_bulk(
+    request: Request,
+    session: SessionDep,
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+    action: Annotated[str, Form()] = "dismiss",
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+) -> HTMLResponse:
+    """Bulk dismiss/done the selected nuggets from within a suggestion group."""
+    target = NuggetStatus.DISMISSED if action == "dismiss" else NuggetStatus.ALREADY_DONE
+    for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
+        nuggets.set_nugget_status(session, nugget_id, target)
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/inbox/create-group", response_class=HTMLResponse)
@@ -1050,12 +1171,14 @@ def inbox_create_group(
     session: SessionDep,
     config: ConfigDep,
     title: Annotated[str, Form()],
+    mode: Annotated[InboxMode, Form()] = "suggested_new_tasks",
     status: Annotated[str, Form()] = "new",
     owner: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
     nugget_ids: Annotated[list[int] | None, Form()] = None,
 ) -> HTMLResponse:
-    """Create a task from the user-confirmed cluster of notes and refresh the inbox."""
-    ids = [n for n in (nugget_ids or [])]
+    """Create a task from a confirmed suggestion cluster and refresh the inbox."""
+    ids = _bulk_nugget_ids(nugget_ids)
     error: str | None = None
     if not title.strip():
         error = "New task needs a title."
@@ -1063,11 +1186,93 @@ def inbox_create_group(
         error = "Select at least one note to create a task."
     else:
         task_organize.apply_create(
+            session,
+            title.strip(),
+            ids,
+            jira_base_url=_jira_base_url(config),
+            description=description.strip() or None,
+        )
+    context = _inbox_context(session, mode, status, owner)
+    context["error"] = error
+    return _render(request, "_inbox.html", context)
+
+
+def _bulk_nugget_ids(nugget_ids: list[int] | None) -> list[int]:
+    """The selected nugget ids, de-duplicated, in a stable order."""
+    return list(dict.fromkeys(nugget_ids or []))
+
+
+def _reviewable_nugget_ids(session: Session, ids: list[int]) -> list[int]:
+    """Keep only ids that are still NEW and unattached (never re-process a
+    nugget the user has since attached/dismissed/marked done)."""
+    if not ids:
+        return []
+    new_ids = {
+        n.id for n in nuggets.list_nuggets(session, status=NuggetStatus.NEW) if n.task_id is None
+    }
+    return [nid for nid in ids if nid in new_ids]
+
+
+@router.post("/gui/inbox/bulk/attach", response_class=HTMLResponse)
+def inbox_bulk_attach(
+    request: Request,
+    session: SessionDep,
+    config: ConfigDep,
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+    task_id: Annotated[str, Form()] = "",
+    title: Annotated[str, Form()] = "",
+    mode: Annotated[InboxMode, Form()] = "review",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Attach the selected nuggets to an existing task, or create one new task from them."""
+    ids = _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids))
+    error: str | None = None
+    if not ids:
+        error = "Select at least one note to attach."
+    elif task_id.strip():
+        tid = int(task_id)
+        for nugget_id in ids:
+            nuggets.attach_nugget(
+                session, nugget_id, task_id=tid, jira_base_url=_jira_base_url(config)
+            )
+    elif title.strip():
+        task_organize.apply_create(
             session, title.strip(), ids, jira_base_url=_jira_base_url(config)
         )
-    context = _inbox_context(session, status, owner)
-    context["inbox_create_error"] = error
-    return _render(request, "_inbox_oob.html", context)
+    else:
+        error = "Choose a task or enter a new-task title."
+    context = _inbox_context(session, mode, status, owner)
+    context["error"] = error
+    return _render(request, "_inbox.html", context)
+
+
+@router.post("/gui/inbox/bulk/dismiss", response_class=HTMLResponse)
+def inbox_bulk_dismiss(
+    request: Request,
+    session: SessionDep,
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+    mode: Annotated[InboxMode, Form()] = "review",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
+        nuggets.set_nugget_status(session, nugget_id, NuggetStatus.DISMISSED)
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
+
+
+@router.post("/gui/inbox/bulk/done", response_class=HTMLResponse)
+def inbox_bulk_done(
+    request: Request,
+    session: SessionDep,
+    nugget_ids: Annotated[list[int] | None, Form()] = None,
+    mode: Annotated[InboxMode, Form()] = "review",
+    status: Annotated[str, Form()] = "new",
+    owner: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    for nugget_id in _reviewable_nugget_ids(session, _bulk_nugget_ids(nugget_ids)):
+        nuggets.set_nugget_status(session, nugget_id, NuggetStatus.ALREADY_DONE)
+    return _render(request, "_inbox.html", _inbox_context(session, mode, status, owner))
 
 
 @router.post("/gui/nuggets/{nugget_id}/attach", response_class=HTMLResponse)
@@ -1246,8 +1451,29 @@ def run_scan(
     llm: Annotated[LLMClient, Depends(get_llm)],
     full: Annotated[str, Form()] = "false",
 ) -> HTMLResponse:
-    run = registry.run("notes_scan", session_factory, config, llm, params={"full": full})
-    return _render(request, "_scan_result.html", {"run": run})
+    try:
+        run_id = registry.run_async(
+            "notes_scan", session_factory, config, llm, params={"full": full}
+        )
+    except Exception as exc:
+        return _render(request, "_job_log_error.html", {"error": str(exc)})
+    with session_factory() as session:
+        context = _log_view_context(session, run_id)
+    context["refresh_url"] = f"/gui/scan-result/{run_id}"
+    context["refresh_target"] = "#scan-result"
+    context["refresh2_url"] = "/gui/inbox"
+    context["refresh2_target"] = "#inbox-list"
+    return _render(request, "_job_log_view.html", context)
+
+
+@router.get("/gui/scan-result/{run_id}", response_class=HTMLResponse)
+def scan_result(request: Request, run_id: int, session: SessionDep) -> HTMLResponse:
+    run = session.get(JobRun, run_id)
+    return (
+        _render(request, "_scan_result_missing.html", {})
+        if run is None
+        else _render(request, "_scan_result.html", {"run": run})
+    )
 
 
 # --- people ---
@@ -1386,6 +1612,56 @@ def label_delete(request: Request, tag_id: int, session: SessionDep) -> HTMLResp
 # --- jobs ---
 
 
+def _entry_view(entry: JobLogEntry) -> dict[str, object]:
+    """One log entry flattened for _log_entry.html (meta keys become top-level)."""
+    meta = entry.meta or {}
+    return {
+        "kind": entry.kind,
+        "message": entry.message,
+        "time": entry.created_at.strftime("%H:%M:%S") if entry.created_at else "",
+        "model": meta.get("model"),
+        "tier": meta.get("tier"),
+        "prompt_chars": meta.get("prompt_chars"),
+        "system_chars": meta.get("system_chars"),
+        "tokens": meta.get("tokens"),
+        "elapsed_ms": meta.get("elapsed_ms"),
+        "retry": bool(meta.get("retry")),
+        "waiting": bool(meta.get("waiting")),
+        "preview": meta.get("preview"),
+    }
+
+
+def _payload_view(payload: dict[str, object]) -> dict[str, object]:
+    """Same flattening for a broadcast (SSE) payload, whose meta is nested."""
+    meta = payload.get("meta")
+    meta = meta if isinstance(meta, dict) else {}
+    created = str(payload.get("created_at") or "")
+    view: dict[str, object] = {
+        "kind": payload.get("kind"),
+        "message": payload.get("message"),
+        "time": created[11:19],
+        "retry": bool(meta.get("retry")),
+        "waiting": bool(meta.get("waiting")),
+    }
+    for key in ("model", "tier", "prompt_chars", "system_chars", "tokens", "elapsed_ms", "preview"):
+        view[key] = meta.get(key)
+    return view
+
+
+def _render_entry(view: dict[str, object]) -> str:
+    return templates.env.get_template("_log_entry.html").render(e=view)
+
+
+def _render_done(run: JobRun) -> str:
+    badge = {"success": "badge-success", "failed": "badge-error"}.get(
+        run.status.value, "badge-info"
+    )
+    return (
+        f'<div class="border-t mt-1 pt-1 text-xs opacity-70">finished — '
+        f'<span class="badge badge-xs {badge}">{run.status.value}</span></div>'
+    )
+
+
 @router.get("/jobs", response_class=HTMLResponse)
 def jobs_page(
     request: Request,
@@ -1393,24 +1669,128 @@ def jobs_page(
     config: ConfigDep,
     registry: Annotated[JobRegistry, Depends(get_registry)],
 ) -> HTMLResponse:
+    runs = _recent_runs(session)
     return _render(
         request,
         "jobs.html",
         {
             "page": "jobs",
             "jobs": [(name, config.jobs.schedules.get(name, "")) for name in registry.names()],
-            "runs": _recent_runs(session),
+            "runs": runs,
+            "running": [r for r in runs if r.status == JobRunStatus.RUNNING],
         },
     )
 
 
 def _recent_runs(session: Session, limit: int = 20) -> list[JobRun]:
-    return list(session.scalars(select(JobRun).order_by(JobRun.started_at.desc()).limit(limit)))
+    return list(
+        session.scalars(
+            select(JobRun)
+            .options(selectinload(JobRun.log_entries))
+            .order_by(JobRun.started_at.desc())
+            .limit(limit)
+        )
+    )
 
 
 @router.get("/gui/job-runs", response_class=HTMLResponse)
 def job_runs(request: Request, session: SessionDep) -> HTMLResponse:
     return _render(request, "_job_runs.html", {"runs": _recent_runs(session)})
+
+
+def _log_view_context(
+    session: Session,
+    run_id: int,
+    refresh_url: str | None = None,
+    refresh_target: str | None = None,
+    refresh2_url: str | None = None,
+    refresh2_target: str | None = None,
+) -> dict[str, object]:
+    run = session.get(JobRun, run_id)
+    rows = list(
+        session.scalars(
+            select(JobLogEntry).where(JobLogEntry.run_id == run_id).order_by(JobLogEntry.id)
+        )
+    )
+    return {
+        "run": run,
+        "entries": [_entry_view(e) for e in rows],
+        "after": rows[-1].id if rows else 0,
+        "refresh_url": refresh_url,
+        "refresh_target": refresh_target,
+        "refresh2_url": refresh2_url,
+        "refresh2_target": refresh2_target,
+    }
+
+
+@router.get("/gui/jobs/{run_id}/log-view", response_class=HTMLResponse)
+def job_log_view(request: Request, run_id: int, session: SessionDep) -> HTMLResponse:
+    if session.get(JobRun, run_id) is None:
+        return _render(request, "_job_log_missing.html", {"run_id": run_id})
+    return _render(request, "_job_log_view.html", _log_view_context(session, run_id))
+
+
+@router.post("/gui/jobs/{run_id}/log/clear", response_class=HTMLResponse)
+def clear_job_log(request: Request, run_id: int, session: SessionDep) -> HTMLResponse:
+    session.execute(delete(JobLogEntry).where(JobLogEntry.run_id == run_id))
+    session.commit()
+    return _render(request, "_job_log_view.html", _log_view_context(session, run_id))
+
+
+@router.post("/gui/job-logs/clear", response_class=HTMLResponse)
+def clear_all_job_logs(request: Request, session: SessionDep) -> HTMLResponse:
+    session.execute(delete(JobLogEntry))
+    session.commit()
+    return _render(request, "_job_runs.html", {"runs": _recent_runs(session)})
+
+
+@router.get("/gui/jobs/{run_id}/events")
+async def job_run_events(request: Request, run_id: int, after: int = 0) -> StreamingResponse:
+    """SSE: replay persisted log entries newer than *after*, then live-tail.
+
+    The DB is replayed first (source of truth across restarts/workers), then
+    the in-process broadcast hub carries the tail with sub-second latency. A
+    terminal ``done`` event closes the stream once the run leaves ``running``.
+    """
+    factory = request.app.state.session_factory
+    hub = request.app.state.broadcast_hub
+
+    def _sse(event: str, payload: object) -> str:
+        return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+    async def gen() -> AsyncIterator[str]:
+        with factory() as session:
+            run = session.get(JobRun, run_id)
+            if run is None:
+                yield _sse("error", {"html": '<p class="text-error text-sm">run not found</p>'})
+                return
+            seen = after
+            rows = list(
+                session.scalars(
+                    select(JobLogEntry)
+                    .where(JobLogEntry.run_id == run_id, JobLogEntry.id > after)
+                    .order_by(JobLogEntry.id)
+                )
+            )
+            for entry in rows:
+                yield _sse("log", {"html": _render_entry(_entry_view(entry))})
+                seen = entry.id
+            if run.status != JobRunStatus.RUNNING:
+                yield _sse("done", {"html": _render_done(run)})
+                return
+        async for event in hub.subscribe(run_id, after_id=seen):
+            if event.get("_done"):
+                with factory() as session:
+                    run = session.get(JobRun, run_id)
+                    yield _sse("done", {"html": _render_done(run) if run else ""})
+                return
+            yield _sse("log", {"html": _render_entry(_payload_view(event))})
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/gui/jobs/{name}/run", response_class=HTMLResponse)
@@ -1423,5 +1803,16 @@ def run_job(
     llm: Annotated[LLMClient, Depends(get_llm)],
     session: SessionDep,
 ) -> HTMLResponse:
-    registry.run(name, session_factory, config, llm)
-    return _render(request, "_job_runs.html", {"runs": _recent_runs(session)})
+    try:
+        run_id = registry.run_async(name, session_factory, config, llm)
+    except Exception as exc:
+        return _render(request, "_job_log_error.html", {"error": str(exc)})
+    return _render(
+        request,
+        "_job_log_view.html",
+        {
+            **_log_view_context(session, run_id),
+            "refresh_url": "/gui/job-runs",
+            "refresh_target": "#job-runs",
+        },
+    )

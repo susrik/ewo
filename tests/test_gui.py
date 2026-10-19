@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
 from datetime import date, timedelta
 from pathlib import Path
@@ -12,13 +13,27 @@ from sqlalchemy.orm import Session
 
 from ewo.config import NotesConfig
 from ewo.core import nuggets
-from ewo.db.models import NuggetKind
+from ewo.db.models import NuggetKind, NuggetSuggestion
 
 
 def _item(session: Session, summary: str = "chase Matti", path: str = "eurohpc/x.md") -> int:
     item, _ = nuggets.upsert_nugget(session, path, 34, summary, NuggetKind.ACTION, "- chase")
     session.commit()
     return item.id
+
+
+def _wait_for_run(client: TestClient, job_name: str, timeout: float = 5) -> dict:
+    """Poll /api/jobs/runs until the most recent *job_name* run finishes."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        runs = client.get("/api/jobs/runs").json()
+        for run in runs:
+            if run["job_name"] == job_name:
+                if run["status"] != "running":
+                    return run
+                break  # newest matching run is still running — retry
+        time.sleep(0.05)
+    raise AssertionError(f"run {job_name} still running after {timeout}s")
 
 
 # --- dashboard ---
@@ -1072,7 +1087,6 @@ def test_inbox_page_and_actions(client: TestClient, session: Session) -> None:
     assert "chase Matti" in page.text and "eurohpc/x.md" in page.text
     assert "notes disabled in config" in page.text
     assert "Never scanned" in page.text
-    assert "No suggested task" in page.text  # nothing matched yet
     assert "break-words" in page.text  # unbroken text can't blow out the width
     assert "break-all" in page.text  # excerpts/tokens force-break even without whitespace
     assert "min-w-0" in page.text  # grid/flex items can shrink below content width
@@ -1112,11 +1126,11 @@ def test_inbox_attach_to_existing_and_group(client: TestClient, session: Session
     item_id = _item(session)
     other = _item(session, "budget", "ai/y.md")
 
-    # a suggestion groups the nugget under its task with a bulk button
+    # a suggestion groups the nugget under its task in the "suggested tasks" tab
     nuggets.update_nugget(session, item_id, suggested_task_id=task["id"])
-    page = client.get("/inbox")
-    assert f"→ #{task['id']} the topic" in page.text
-    assert "Attach selected to #" in page.text
+    nuggets.update_nugget(session, other, suggested_task_id=task["id"])
+    page = client.get("/inbox", params={"mode": "suggested_tasks"})
+    assert f"#{task['id']} the topic" in page.text
     assert "✓ Attach to #" in page.text  # one-click shortcut appears when suggested
 
     # single attach to the existing task via the picker
@@ -1124,10 +1138,12 @@ def test_inbox_attach_to_existing_and_group(client: TestClient, session: Session
     assert "attached" in attached.text
     assert client.get(f"/api/tasks/{task['id']}/nuggets").json()[0]["id"] == item_id
 
-    # bulk attach for the remaining group
-    nuggets.update_nugget(session, other, suggested_task_id=task["id"])
-    response = client.post("/gui/inbox/attach-group", data={"task_id": str(task["id"])})
-    assert "Nothing to review" in response.text
+    # the remaining nugget is attached via the group's "Attach" action
+    response = client.post(
+        "/gui/inbox/attach-group",
+        data={"task_id": str(task["id"]), "nugget_ids": str(other)},
+    )
+    assert "No suggested tasks yet" in response.text
     assert len(client.get(f"/api/tasks/{task['id']}/nuggets").json()) == 2
 
 
@@ -1138,21 +1154,19 @@ def test_inbox_attach_group_selection(client: TestClient, session: Session) -> N
     nuggets.update_nugget(session, first, suggested_task_id=task["id"])
     nuggets.update_nugget(session, second, suggested_task_id=task["id"])
 
-    # only the checked nugget is attached (nugget_ids excludes `second`)
+    # only the selected nugget is attached (nugget_ids excludes `second`)
     client.post(
         "/gui/inbox/attach-group",
-        data={"task_id": str(task["id"]), "selected": "1", "nugget_ids": str(first)},
+        data={"task_id": str(task["id"]), "nugget_ids": str(first)},
     )
     attached = client.get(f"/api/tasks/{task['id']}/nuggets").json()
     assert [n["id"] for n in attached] == [first]
     # the unchecked nugget stays new and is still suggested for the task
     assert client.get("/api/nuggets").json()[0]["id"] == second
 
-    # unchecking everything (no nugget_ids) attaches nothing
-    client.post(
-        "/gui/inbox/attach-group",
-        data={"task_id": str(task["id"]), "selected": "1"},
-    )
+    # no selection → inline error, nothing attached
+    response = client.post("/gui/inbox/attach-group", data={"task_id": str(task["id"])})
+    assert "Select at least one note to attach" in response.text
     assert [n["id"] for n in client.get(f"/api/tasks/{task['id']}/nuggets").json()] == [first]
 
 
@@ -1174,6 +1188,7 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
                             "kind": "create",
                             "nugget_ids": [a, b],
                             "title": "alpha beta",
+                            "description": "do both bits",
                             "reason": "pair",
                         }
                     ]
@@ -1181,16 +1196,22 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
             )
         ]
     )
-    proposal = client.post("/gui/inbox/suggest-creates")
-    assert "alpha beta" in proposal.text and "alpha thing" in proposal.text
+    posted = client.post("/gui/inbox/suggest-creates")
+    assert "inbox_suggest" in posted.text  # live job-log view streamed in
+    _wait_for_run(client, "inbox_suggest")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "alpha beta" in panel.text and "alpha thing" in panel.text
+    assert "do both bits" in panel.text  # description in the editable draft
 
     # untick one nugget: only the selected one becomes the new task
     created = client.post(
-        "/gui/inbox/create-group", data={"title": "alpha beta", "nugget_ids": str(a)}
+        "/gui/inbox/create-group",
+        data={"title": "alpha beta", "description": "do both bits", "nugget_ids": str(a)},
     )
     assert created.status_code == 200
     assert client.get("/api/nuggets", params={"status": "attached"}).json()[0]["id"] == a
     assert [n["id"] for n in client.get("/api/nuggets").json()] == [b]
+    assert client.get("/api/tasks").json()[0]["description"] == "do both bits"
 
     # no nuggets selected → inline error, nothing created
     response = client.post("/gui/inbox/create-group", data={"title": "alpha beta"})
@@ -1200,20 +1221,21 @@ def test_inbox_suggest_creates_and_create_group(client: TestClient, session: Ses
     empty = client.post("/gui/inbox/create-group", data={"title": "   ", "nugget_ids": str(b)})
     assert "New task needs a title" in empty.text
 
-    # garbage LLM output surfaces inline, not a 500
+    # garbage LLM output is skipped per chunk; the run still succeeds with no proposals
     client.app.state.llm = FakeLLM(responses=["garbage"])  # type: ignore[attr-defined]
-    assert (
-        "did not return valid inbox create proposals"
-        in client.post("/gui/inbox/suggest-creates").text
-    )
+    client.post("/gui/inbox/suggest-creates")
+    _wait_for_run(client, "inbox_suggest")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "No new-task suggestions right now." in panel.text
 
 
 def test_inbox_suggest_button(client: TestClient, session: Session) -> None:
     _item(session)
-    # no llm key configured: the job fails but the inbox still re-renders
+    # the suggest action now runs nuggets_match in the background and streams a
+    # live job-log view in its place
     response = client.post("/gui/inbox/suggest", data={"status": "new", "owner": ""})
     assert response.status_code == 200
-    assert "chase Matti" in response.text
+    assert "nuggets_match" in response.text
 
 
 def test_inbox_dismiss_and_owner_filter(client: TestClient, session: Session) -> None:
@@ -1231,10 +1253,232 @@ def test_inbox_dismiss_and_owner_filter(client: TestClient, session: Session) ->
     assert "dismissed" in dismissed.text
 
 
+def test_inbox_bulk_dismiss_and_done(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    c = _item(session, "gamma thing", "ai/c.md")
+
+    response = client.post("/gui/inbox/bulk/dismiss", data={"nugget_ids": [a, b]})
+    assert response.status_code == 200
+    new = client.get("/api/nuggets", params={"status": "new"}).json()
+    assert [n["id"] for n in new] == [c]
+    dismissed = client.get("/api/nuggets", params={"status": "dismissed"}).json()
+    assert {n["id"] for n in dismissed} == {a, b}
+
+    response = client.post("/gui/inbox/bulk/done", data={"nugget_ids": [c]})
+    assert response.status_code == 200
+    assert client.get("/api/nuggets", params={"status": "new"}).json() == []
+    done = client.get("/api/nuggets", params={"status": "already_done"}).json()
+    assert [n["id"] for n in done] == [c]
+
+
+def test_inbox_bulk_attach_existing(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "the topic"}).json()
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+
+    response = client.post(
+        "/gui/inbox/bulk/attach",
+        data={"task_id": str(task["id"]), "nugget_ids": [a, b]},
+    )
+    assert response.status_code == 200
+    assert "Nothing to review" in response.text
+    attached = client.get(f"/api/tasks/{task['id']}/nuggets").json()
+    assert {n["id"] for n in attached} == {a, b}
+
+
+def test_inbox_bulk_attach_new_task(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+
+    response = client.post(
+        "/gui/inbox/bulk/attach",
+        data={"title": "one task", "nugget_ids": [a, b]},
+    )
+    assert response.status_code == 200
+    tasks = client.get("/api/tasks").json()
+    assert [t["title"] for t in tasks] == ["one task"]
+    attached = client.get(f"/api/tasks/{tasks[0]['id']}/nuggets").json()
+    assert {n["id"] for n in attached} == {a, b}
+
+
+def test_inbox_bulk_attach_errors(client: TestClient, session: Session) -> None:
+    _item(session)
+
+    # nothing selected → inline error, nothing created
+    no_selection = client.post("/gui/inbox/bulk/attach", data={"task_id": "1"})
+    assert "Select at least one note" in no_selection.text
+
+    # selected but no target chosen → inline error
+    no_target = client.post("/gui/inbox/bulk/attach", data={"nugget_ids": [1]})
+    assert "Choose a task or enter a new-task title" in no_target.text
+
+
+def test_inbox_bulk_filter_markers(client: TestClient, session: Session) -> None:
+    _item(session)
+
+    page = client.get("/inbox")
+    assert 'id="inbox-search"' in page.text
+    assert "select-all" in page.text
+    assert "nugget-select" in page.text
+    assert "nugget-row" in page.text
+    assert "data-search=" in page.text
+    # the filter is re-applied after htmx finishes swapping/settling so a bulk
+    # action keeps the visible list in sync with the reported filter count
+    assert "htmx:afterSwap" in page.text
+    assert "htmx:afterSettle" in page.text
+    assert "/gui/inbox/bulk/dismiss" in page.text
+    assert "/gui/inbox/bulk/done" in page.text
+    assert "/gui/inbox/bulk/attach" in page.text
+
+    # the bulk toolbar is only shown for the "new" status view
+    all_page = client.get("/inbox", params={"status": "all"})
+    assert "bulk-toolbar" not in all_page.text
+
+
+def test_inbox_group_toggle_and_count_markers(client: TestClient, session: Session) -> None:
+    task = client.post("/api/tasks", json={"title": "the topic"}).json()
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    nuggets.update_nugget(session, a, suggested_task_id=task["id"])
+    nuggets.update_nugget(session, b, suggested_task_id=task["id"])
+
+    # suggested tasks: the group panel carries the hooks the client-side JS
+    # keys off (data-group) and an initial server-rendered total.
+    panel = client.get("/gui/inbox", params={"mode": "suggested_tasks"})
+    assert "data-group" in panel.text
+    assert "data-group-count" in panel.text
+    assert "0 of 2 selected" in panel.text
+    # selection-based "Already done"/"Dismiss" controls are pillbox-style
+    assert "accent-btn-outline" in panel.text
+
+    # review bulk toolbar's "Already done"/"Dismiss" are pillbox-style too
+    review = client.get("/gui/inbox", params={"mode": "review"})
+    assert "accent-btn-outline" in review.text
+
+
+def test_inbox_suggest_panel_button_order_and_count(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    _suggestion(session, "the pair", a, b)
+
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "data-group" in panel.text
+    assert "data-group-count" in panel.text
+    assert "0 of 2 selected" in panel.text
+
+    # Create and Attach now sits above the matching-nugget list, not below it
+    assert panel.text.index("Create and Attach") < panel.text.index("alpha thing")
+    # selection-based controls are pillbox-style
+    assert "accent-btn-outline" in panel.text
+
+
+def test_inbox_bulk_attach_task_search(client: TestClient, session: Session) -> None:
+    client.post("/api/tasks", json={"title": "the topic"})
+    _item(session)
+
+    results = client.get(
+        "/gui/tasks/search",
+        params={"q": "topic", "action": "bulk_attach", "status": "new", "owner": ""},
+    )
+    assert results.status_code == 200
+    assert "/gui/inbox/bulk/attach" in results.text
+    assert ".nugget-select:checked" in results.text
+
+
+def _suggestion(session: Session, title: str, *nugget_ids: int) -> NuggetSuggestion:
+    row = NuggetSuggestion(title=title, reason="grouped", nugget_ids=list(nugget_ids))
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_inbox_bulk_skips_processed_nuggets(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+
+    # `a` is already dismissed; only `b` should be affected by the bulk dismiss
+    client.post(f"/gui/nuggets/{a}/dismiss")
+    response = client.post("/gui/inbox/bulk/dismiss", data={"nugget_ids": [a, b]})
+    assert response.status_code == 200
+    assert client.get("/api/nuggets", params={"status": "new"}).json() == []
+    dismissed = client.get("/api/nuggets", params={"status": "dismissed"}).json()
+    assert {n["id"] for n in dismissed} == {a, b}  # a stays dismissed, b newly dismissed
+
+    # bulk done must not resurrect/re-mark an already-dismissed nugget either
+    c = _item(session, "gamma thing", "ai/c.md")
+    client.post("/gui/inbox/bulk/done", data={"nugget_ids": [a, c]})
+    done = client.get("/api/nuggets", params={"status": "already_done"}).json()
+    assert [n["id"] for n in done] == [c]
+    still_dismissed = client.get("/api/nuggets", params={"status": "dismissed"}).json()
+    assert {n["id"] for n in still_dismissed} == {a, b}
+
+
+def test_inbox_suggest_panel_clear_and_delete(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    s1 = _suggestion(session, "pair one", a, b)
+    _suggestion(session, "pair two", a, b)
+
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "pair one" in panel.text and "pair two" in panel.text
+
+    # delete a single suggestion; the other remains
+    client.post(f"/gui/inbox/suggest/{s1.id}/delete")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "pair one" not in panel.text and "pair two" in panel.text
+
+    # clear drops everything
+    client.post("/gui/inbox/suggest/clear")
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "No new-task suggestions right now." in panel.text
+
+
+def test_inbox_suggest_bulk_dismiss_keeps_remaining(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    _suggestion(session, "the pair", a, b)
+
+    # dismiss only one of the two suggested nuggets
+    response = client.post("/gui/inbox/suggest/bulk", data={"action": "dismiss", "nugget_ids": [a]})
+    assert response.status_code == 200
+    assert client.get("/api/nuggets", params={"status": "dismissed"}).json()[0]["id"] == a
+
+    # the panel keeps its remaining nugget (rather than disappearing)
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "the pair" in panel.text and "beta thing" in panel.text
+
+    # dismissing the last one retires the panel entirely
+    client.post("/gui/inbox/suggest/bulk", data={"action": "dismiss", "nugget_ids": [b]})
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "No new-task suggestions right now." in panel.text
+
+
+def test_inbox_suggest_revalidates_against_attached(client: TestClient, session: Session) -> None:
+    a = _item(session, "alpha thing", "ai/a.md")
+    b = _item(session, "beta thing", "ai/b.md")
+    _suggestion(session, "the pair", a, b)
+
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "alpha thing" in panel.text and "beta thing" in panel.text
+
+    # `a` is attached elsewhere (e.g. from the main list); the panel reflects
+    # this by dropping it without touching `b`.
+    task = client.post("/api/tasks", json={"title": "the topic"}).json()
+    client.post(f"/gui/nuggets/{a}/attach", data={"task_id": str(task["id"])})
+    panel = client.get("/gui/inbox", params={"mode": "suggested_new_tasks"})
+    assert "alpha thing" not in panel.text and "beta thing" in panel.text
+
+
 def test_inbox_scan_button_when_disabled(client: TestClient) -> None:
+    # notes disabled → the run succeeds trivially; watching it streams a live log
     response = client.post("/gui/scan", data={"full": "false"})
     assert response.status_code == 200
-    assert "success" in response.text and "notes disabled" in response.text
+    assert "notes_scan" in response.text
+    run = _wait_for_run(client, "notes_scan")
+    assert run["status"] == "success"
+    result = client.get(f"/gui/scan-result/{run['id']}")
+    assert "success" in result.text and "notes disabled" in result.text
     assert "notes disabled" in client.get("/inbox").text  # last_scan shown
 
 
@@ -1299,4 +1543,34 @@ def test_jobs_page_and_run(client: TestClient) -> None:
     assert "No job runs yet" in client.get("/gui/job-runs").text
 
     response = client.post("/gui/jobs/what_next/run")
-    assert "what_next" in response.text and "success" in response.text
+    assert "what_next" in response.text  # live job-log view streams in
+    run = _wait_for_run(client, "what_next")
+    assert run["status"] == "success"
+    # the finished run now advertises its log in the runs table
+    assert "view (" in client.get("/gui/job-runs").text
+
+
+def test_job_log_view_and_events(client: TestClient) -> None:
+    run = client.post("/api/jobs/what_next/run").json()
+    run_id = run["id"]
+
+    view = client.get(f"/gui/jobs/{run_id}/log-view")
+    assert view.status_code == 200
+    assert "what_next" in view.text and "clear log" in view.text
+    assert "started" in view.text and "done" in view.text
+
+    # SSE replay for a finished run: entries then a terminal "done" event
+    stream = client.get(f"/gui/jobs/{run_id}/events")
+    assert stream.status_code == 200
+    assert "event: log" in stream.text and "event: done" in stream.text
+    assert "started" in stream.text
+
+    # an unknown run surfaces a friendly message (log view + SSE error event)
+    assert "not found" in client.get("/gui/jobs/999999/log-view").text
+    missing = client.get("/gui/jobs/999999/events")
+    assert "event: error" in missing.text
+
+    # clearing a run's log empties it
+    cleared = client.post(f"/gui/jobs/{run_id}/log/clear")
+    assert "No log entries" in cleared.text
+    assert client.get(f"/api/jobs/runs/{run_id}/log").json() == []

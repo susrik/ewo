@@ -1,33 +1,138 @@
-{% for group in groups %}
-<div class="mt-4">
-  {% if group.kind == 'task' %}
-  <div class="flex flex-wrap items-center gap-2">
-    <h3 class="font-semibold text-sm min-w-0 break-words">→ #{{ group.task.id }} {{ group.task.title }}</h3>
-    <form id="attach-group-{{ group.task.id }}" hx-post="/gui/inbox/attach-group" hx-target="#inbox-list" class="inline">
-      <input type="hidden" name="task_id" value="{{ group.task.id }}">
+{% if error %}
+<div class="alert alert-warning py-2 text-sm mt-2"><span>{{ error }}</span></div>
+{% endif %}
+
+{% if mode == 'review' %}
+  {% if filters.status == 'new' %}
+  <div class="flex flex-wrap items-center gap-2 mt-2 bulk-toolbar rounded-box p-2">
+    <label class="flex items-center gap-2 text-sm cursor-pointer">
+      <input type="checkbox" class="checkbox checkbox-xs select-all" title="Select all visible nuggets" aria-label="Select all visible nuggets">
+      <span>Select all</span>
+    </label>
+    <details class="dropdown task-picker">
+      <summary tabindex="0" role="button" class="btn btn-sm btn-outline btn-bulk flex items-center gap-1">Attach to task… <span class="opacity-60">▾</span></summary>
+      <div class="dropdown-content z-20 w-80 p-2 shadow bg-base-100 rounded-box">
+        <input type="search" class="input input-bordered input-sm w-full" name="q" placeholder="Search tasks…"
+               hx-get="/gui/tasks/search" hx-trigger="keyup changed delay:250ms, search"
+               hx-target="#inbox-bulk-attach-results"
+               hx-vals='{"action": "bulk_attach", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}", "mode": "review"}'
+               autocomplete="off">
+        <div id="inbox-bulk-attach-results" class="mt-1"></div>
+      </div>
+    </details>
+    <form hx-post="/gui/inbox/bulk/attach" hx-include=".nugget-select:checked" hx-target="#inbox-list" class="flex items-center gap-1">
+      <input type="hidden" name="mode" value="review">
       <input type="hidden" name="status" value="{{ filters.status }}">
       <input type="hidden" name="owner" value="{{ filters.owner }}">
-      <input type="hidden" name="selected" value="1">
-      <button class="btn btn-xs btn-primary btn-outline" type="submit">
-        Attach selected to #{{ group.task.id }}
-      </button>
+      <input class="input input-bordered input-xs" name="title" placeholder="New task title…">
+      <button class="btn btn-xs btn-bulk-solid" type="submit" title="Attach all selected to one new task">＋ New task</button>
     </form>
+    <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/bulk/done"
+            hx-include=".nugget-select:checked"
+            hx-vals='{"mode": "review", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+            hx-target="#inbox-list">Already done</button>
+    <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/bulk/dismiss"
+            hx-include=".nugget-select:checked"
+            hx-vals='{"mode": "review", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+            hx-target="#inbox-list">Dismiss</button>
   </div>
-  {% elif group.kind == 'new' %}
-  <h3 class="font-semibold text-sm opacity-70">No suggested task — attach by hand or create a new one</h3>
-  {% else %}
-  <h3 class="font-mono text-sm opacity-70">{{ group.path }}</h3>
   {% endif %}
-  <div class="grid gap-2 mt-1">
-    {% for nugget in group.nuggets %}
-    {% if group.kind == 'task' %}
-    {% with group_form_id = "attach-group-" ~ group.task.id %}{% include "_nugget.html" %}{% endwith %}
-    {% else %}
-    {% include "_nugget.html" %}
-    {% endif %}
-    {% endfor %}
+  {% if groups %}
+  <div class="grid gap-2 mt-2">
+    {% for group in groups %}{% for nugget in group.nuggets %}{% include "_nugget.html" %}{% endfor %}{% endfor %}
   </div>
-</div>
-{% else %}
-<p class="opacity-60 mt-2">Nothing to review.</p>
-{% endfor %}
+  {% else %}
+  <p class="opacity-60 mt-2">Nothing to review.</p>
+  {% endif %}
+
+{% elif mode == 'suggested_tasks' %}
+  <div class="flex justify-end mt-2">
+    <button class="btn btn-sm" type="button" hx-post="/gui/inbox/suggest" hx-target="#inbox-list"
+            hx-vals='{"mode": "suggested_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}' title="Recompute suggested tasks for new nuggets">Recompute</button>
+  </div>
+  {% if groups %}
+    {% for group in groups %}
+    <div class="mt-3 inbox-group panel-suggested rounded-box p-3" id="task-{{ group.task.id }}" data-group>
+      <div class="flex flex-wrap items-center gap-2">
+        <input type="checkbox" class="checkbox checkbox-xs group-toggle accent-checkbox" title="Select all/none in this group" aria-label="Select all/none in this group">
+        <span class="font-semibold text-sm min-w-0 break-words">#{{ group.task.id }} {{ group.task.title }}</span>
+        <form hx-post="/gui/inbox/attach-group" hx-target="#inbox-list" hx-include="#task-{{ group.task.id }} .nugget-select" class="flex items-center gap-1">
+          <input type="hidden" name="task_id" value="{{ group.task.id }}">
+          <input type="hidden" name="mode" value="suggested_tasks">
+          <input type="hidden" name="status" value="{{ filters.status }}">
+          <input type="hidden" name="owner" value="{{ filters.owner }}">
+          <button class="btn btn-xs accent-btn-solid" type="submit">Attach</button>
+        </form>
+        <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/suggest/bulk"
+                hx-vals='{"action": "done", "mode": "suggested_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+                hx-include="#task-{{ group.task.id }} .nugget-select" hx-target="#inbox-list">Already done</button>
+        <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/suggest/bulk"
+                hx-vals='{"action": "dismiss", "mode": "suggested_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+                hx-include="#task-{{ group.task.id }} .nugget-select" hx-target="#inbox-list">Dismiss</button>
+        <span class="text-xs opacity-60 ml-auto" data-group-count>0 of {{ group.nuggets | length }} selected</span>
+      </div>
+      <div class="grid gap-2 mt-2">
+        {% for nugget in group.nuggets %}{% include "_nugget.html" %}{% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+  <p class="opacity-60 mt-2">No suggested tasks yet. Run a scan or Recompute.</p>
+  {% endif %}
+
+{% elif mode == 'suggested_new_tasks' %}
+  <div class="flex flex-wrap items-center justify-between gap-2 mt-2">
+    <span class="text-sm opacity-70">AI-proposed new tasks grouping related notes. Edit the title and description, then confirm.</span>
+    <div class="flex gap-1">
+      {% if groups %}
+      <button class="btn btn-xs btn-ghost" type="button" hx-post="/gui/inbox/suggest/clear" hx-target="#inbox-list"
+              hx-vals='{"mode": "suggested_new_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'>Dismiss suggestions</button>
+      {% endif %}
+      <button class="btn btn-xs accent-btn-solid" type="button" hx-post="/gui/inbox/suggest-creates" hx-target="#inbox-list"
+              hx-vals='{"mode": "suggested_new_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'>{{ 'Regenerate' if groups else 'Generate suggestions' }}</button>
+    </div>
+  </div>
+  {% if groups %}
+    {% for group in groups %}
+    <div class="mt-3 inbox-group panel-new rounded-box p-3" id="suggest-{{ group.id }}" data-group>
+      <div class="flex items-center gap-2">
+        <span class="badge badge-sm badge-primary">new task</span>
+        <button class="btn btn-xs btn-ghost ml-auto" type="button" title="Discard this suggestion"
+                hx-post="/gui/inbox/suggest/{{ group.id }}/delete" hx-target="#inbox-list"
+                hx-vals='{"mode": "suggested_new_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'>✕ Discard</button>
+      </div>
+      <div class="mt-2">
+        <label class="text-xs opacity-60">Title</label>
+        <input class="input input-bordered input-sm w-full" name="title" value="{{ group.title }}" form="suggest-form-{{ group.id }}" required>
+      </div>
+      <div class="mt-2">
+        <label class="text-xs opacity-60">Description</label>
+        <textarea class="textarea textarea-bordered textarea-sm w-full" name="description" form="suggest-form-{{ group.id }}" rows="3">{{ group.description or group.title }}</textarea>
+      </div>
+      {% if group.reason %}<div class="text-xs opacity-70 mt-1">— {{ group.reason }}</div>{% endif %}
+      <div class="flex flex-wrap items-center gap-2 mt-2">
+        <input type="checkbox" class="checkbox checkbox-xs group-toggle accent-checkbox" title="Select all/none in this group" aria-label="Select all/none in this group">
+        <form id="suggest-form-{{ group.id }}" hx-post="/gui/inbox/create-group" hx-target="#inbox-list"
+              hx-include="#suggest-{{ group.id }} .nugget-select" class="flex items-center gap-1">
+          <input type="hidden" name="mode" value="suggested_new_tasks">
+          <input type="hidden" name="status" value="{{ filters.status }}">
+          <input type="hidden" name="owner" value="{{ filters.owner }}">
+          <button class="btn btn-xs accent-btn-solid" type="submit">Create and Attach</button>
+        </form>
+        <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/suggest/bulk"
+                hx-vals='{"action": "done", "mode": "suggested_new_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+                hx-include="#suggest-{{ group.id }} .nugget-select" hx-target="#inbox-list">Already done</button>
+        <button class="btn btn-xs accent-btn-outline" type="button" hx-post="/gui/inbox/suggest/bulk"
+                hx-vals='{"action": "dismiss", "mode": "suggested_new_tasks", "status": "{{ filters.status }}", "owner": "{{ filters.owner }}"}'
+                hx-include="#suggest-{{ group.id }} .nugget-select" hx-target="#inbox-list">Dismiss</button>
+        <span class="text-xs opacity-60 ml-auto" data-group-count>0 of {{ group.nuggets | length }} selected</span>
+      </div>
+      <div class="grid gap-2 mt-2">
+        {% for nugget in group.nuggets %}{% include "_nugget.html" %}{% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+  <p class="opacity-60 mt-2">No new-task suggestions right now.</p>
+  {% endif %}
+{% endif %}

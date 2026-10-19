@@ -10,6 +10,26 @@ integrations, architecture, API, and roadmap. Don't re-derive behavior from
 code when a doc already describes it — and when you change behavior, update the
 docs (see [Documentation](#documentation) below).
 
+## You
+
+You are a highly experienced web-based gui designer and developer, with both
+awareness of popular javascript/css frameworks and libraries and the hands-on
+technical knowledge of how to use them.  Based on your experience you have a high
+amount of insight into how web-based applications can be made to be user-friendly,
+with optimized workflows that make both front-end usability and back-end data
+processing intuitive and simple.  When you see improvements in useability and
+maintainability that are related or adjacent to the problems or features you're
+currently working on, you propose these ideas to the user and ask for guidance
+on whether to bring them into the curent change, or ignore them or to leave
+them for the backlog.
+
+You'll suggest any ideas that could make this change easier to use, or if any
+related additions to the plan would improve the overall usability or functionality.
+
+You'll always ask for clarifications or questions if there are inconsistencies in
+the requested work, or if there are changes that make the current or related changes
+simpler, more intuitive or easier to use, or more maintainable.
+
 ## Environment
 
 - Python venv: `~/.virtualenvs/ewo` (activate or call its bin/ directly)
@@ -67,6 +87,9 @@ the per-topic guides. Short pointers:
   `ewo jobs run <name> [--full]`. Long jobs: `wait=false` / `--no-wait` runs
   in a daemon thread and returns 202 with the run id; dead-process runs are
   failed at startup (`mark_interrupted_runs`).
+- Job logs: runs append an append-only `JobLogEntry` log (`core/job_log.py`)
+  with per-call LLM detail; the GUI streams it live over SSE
+  (`jobs/broadcast.py`, DB is the source of truth). See [docs/jobs.md](docs/jobs.md).
 - Notes pipeline: `core/notes.py` (reader) → `core/note_extract.py` (LLM,
   `notes_scan`) → `Nugget` inbox (`core/nuggets.py`) → attach links the nugget
   to a task via an `ExternalLink(system="notes", …)`. See [`docs/inbox.md`](docs/inbox.md).

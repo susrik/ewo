@@ -82,6 +82,9 @@ def test_repair_drops_legacy_unique_and_keeps_rows(
                 " description TEXT)"
             )
         )
+        # job_runs exists from the very first schema; the job-log migration adds
+        # a column to it and creates job_log_entries referencing its id.
+        conn.execute(sa.text("CREATE TABLE job_runs (id INTEGER NOT NULL, PRIMARY KEY (id))"))
         conn.execute(sa.text("INSERT INTO tasks (id) VALUES (1), (2)"))
         conn.execute(
             sa.text(

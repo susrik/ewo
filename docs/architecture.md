@@ -19,9 +19,10 @@ ewo/
     nugget_match.py  suggested-task matching
     task_organize.py stateless merge/split/create/retitle + topic grouping
     tasks.py, people.py, tags.py, one_on_ones.py, whatnext.py,
-    reports.py, dashboard.py, housekeeping.py, report_publisher.py, llm.py
+    reports.py, dashboard.py, housekeeping.py, report_publisher.py, llm.py,
+    job_log.py
   db/              SQLAlchemy models + Alembic migrations
-  jobs/            registry, builtin jobs, scheduler
+  jobs/            registry, builtin jobs, scheduler, broadcast (live-log hub)
   listeners/       Discord + shared command router (base.py)
   mcp/             tool definitions (tools.py) + stdio/HTTP servers
   cli/             click CLI (thin /api client)
@@ -69,6 +70,19 @@ proposals behind the "Organize (AI)" button — nothing persists until confirmed
 The same module powers topic grouping (`propose_topic_group` / `apply_group`)
 and related-task grouping (`propose_related`). Parent choices are validated up
 front; self-parent and descendant cycles raise `ValueError` before any change.
+
+## Jobs & live logs
+
+Jobs register in `jobs/builtin.py` via the registry; every execution records a
+`JobRun` row. As they run, jobs append `JobLogEntry` rows through
+`core/job_log.py` — steps, errors, and per-call LLM detail (model, tier,
+prompt/token sizes, timing, truncated preview). The GUI streams a run's log
+over SSE (`/gui/jobs/{id}/events`): it first **replays** the persisted entries
+(the DB is the source of truth across workers/restarts), then live-tails via
+the in-process `jobs/broadcast.py` `BroadcastHub`, and closes with a terminal
+`done` event. `config.jobs.log_retention_days` bounds growth (the
+`housekeeping` job prunes); `config.jobs.log_prompt_preview_chars` caps preview
+size.
 
 ## Tags & inheritance
 

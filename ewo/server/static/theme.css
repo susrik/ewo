@@ -35,6 +35,145 @@
   --bc: #1f2937;
 }
 
+/* --- inbox mode themes ---
+   The inbox has three mutually-exclusive views, each with its own colour so
+   the panels read clearly apart. Each panel sets a scoped ``--accent`` (with
+   -c/-soft/-line variants) and the generic ``.accent-*`` controls below inherit
+   it, so re-theming a whole view is a single token here:
+     review            — purple (bulk actions)
+     suggested tasks   — blue   (attach to an existing task)
+     suggested new     — teal   (create a brand-new task) */
+:root {
+  --accent: var(--p);
+  --accent-c: var(--pc);
+
+  --theme-review: var(--a);        /* purple */
+  --theme-review-c: var(--ac);
+  --theme-review-soft: color-mix(in srgb, var(--theme-review) 7%, transparent);
+  --theme-review-line: color-mix(in srgb, var(--theme-review) 32%, transparent);
+
+  --theme-suggested: var(--p);     /* blue */
+  --theme-suggested-c: var(--pc);
+  --theme-suggested-soft: color-mix(in srgb, var(--theme-suggested) 7%, transparent);
+  --theme-suggested-line: color-mix(in srgb, var(--theme-suggested) 32%, transparent);
+
+  --theme-new: var(--s);           /* teal */
+  --theme-new-c: var(--sc);
+  --theme-new-soft: color-mix(in srgb, var(--theme-new) 7%, transparent);
+  --theme-new-line: color-mix(in srgb, var(--theme-new) 32%, transparent);
+}
+
+/* review (purple) bulk toolbar */
+.bulk-toolbar {
+  --accent: var(--theme-review);
+  --accent-c: var(--theme-review-c);
+  border: 1px solid var(--theme-review-line);
+  background-color: var(--theme-review-soft);
+}
+
+/* suggested-tasks (blue) panel */
+.panel-suggested {
+  --accent: var(--theme-suggested);
+  --accent-c: var(--theme-suggested-c);
+  border: 1px solid var(--theme-suggested-line);
+  background-color: var(--theme-suggested-soft);
+}
+
+/* suggested-new-tasks (teal) panel */
+.panel-new {
+  --accent: var(--theme-new);
+  --accent-c: var(--theme-new-c);
+  border: 1px solid var(--theme-new-line);
+  background-color: var(--theme-new-soft);
+}
+
+/* --- themed controls (inherit the enclosing panel's --accent) --- */
+.accent-checkbox {
+  border-color: var(--accent);
+}
+.accent-checkbox:checked,
+.accent-checkbox[aria-checked="true"],
+.accent-checkbox:indeterminate,
+.accent-checkbox[aria-checked="mixed"] {
+  border-color: var(--accent);
+  background-color: var(--accent);
+}
+.accent-btn-solid {
+  color: var(--accent-c);
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+.accent-btn-solid:hover {
+  background-color: var(--accent);
+  color: var(--accent-c);
+  border-color: var(--accent);
+}
+
+/* --- pillbox selection controls ---
+   "Already done"/"Dismiss" selection controls are outlined pills: a visible
+   accent border and text so they read as buttons (unlike ``btn-ghost``, which
+   is transparent and looks like bare text), fully rounded to a pill. */
+.accent-btn-outline {
+  color: var(--accent);
+  border-color: var(--accent);
+  background-color: transparent;
+  border-radius: 9999px;
+}
+.accent-btn-outline:hover {
+  background-color: var(--accent);
+  color: var(--accent-c);
+  border-color: var(--accent);
+}
+
+/* --- review-mode (purple) action buttons --- */
+.btn-bulk {
+  color: var(--theme-review);
+  border-color: var(--theme-review);
+}
+.btn-bulk:hover {
+  background-color: var(--theme-review);
+  color: var(--theme-review-c);
+  border-color: var(--theme-review);
+}
+.btn-bulk-solid {
+  color: var(--theme-review-c);
+  background-color: var(--theme-review);
+  border-color: var(--theme-review);
+}
+.btn-bulk-solid:hover {
+  background-color: var(--theme-review);
+  color: var(--theme-review-c);
+  border-color: var(--theme-review);
+}
+
+/* --- checkbox selected state ---
+   daisyUI's prebuilt full.css draws the checkbox checkmark with
+   ``oklch(var(--bc)/...)``; the hex theme tokens above make those
+   expressions invalid on oklch-capable browsers, so ``:checked`` renders as an
+   empty circle. Re-draw the checked/indeterminate states in brand colours so
+   selection is unmistakable everywhere (inbox bulk select, group attach,
+   task/people filters, organize proposals). */
+.checkbox:checked,
+.checkbox[aria-checked="true"] {
+  animation: none;
+  border-color: var(--p);
+  background-color: var(--p);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 11l3.5 3.5 7.5-9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 80% 80%;
+}
+.checkbox:indeterminate,
+.checkbox[aria-checked="mixed"] {
+  animation: none;
+  border-color: var(--p);
+  background-color: var(--p);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' stroke='white' stroke-width='3.5' stroke-linecap='round'%3E%3Cpath d='M5 10h10'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 60% 60%;
+}
+
 /* --- priority row shading (very light tints) --- */
 .row-priority-critical > td,
 .row-priority-critical > td:first-child {
